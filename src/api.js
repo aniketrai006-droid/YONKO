@@ -28,13 +28,11 @@ export async function analyzeFiles(files) {
   return response.json();
 }
 
-// Reviewer sign in / sign up.
+// Reviewer sign in / sign up with an official email and password.
 //
-// The FastAPI service currently exposes /health, /api/info and /analyze only,
-// so reviewer accounts are kept in this browser session for the demo. When the
-// backend adds its auth route, replace the body of these two functions with the
-// same request() pattern used by analyzeFiles and keep the returned shape:
-//   { email: string }
+// Email accounts are kept in this browser for the demo. Google sign in is
+// handled separately below: the backend verifies the credential with Google
+// and answers with our own session token.
 const ACCOUNTS_KEY = 'yonko_reviewer_accounts';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -99,4 +97,35 @@ export async function signInReviewer({ email, password }) {
   }
 
   return { email: accounts[normalized].email };
+}
+
+// Google sign in. The browser only holds Google's ID token for a moment; the
+// backend calls Google, checks the token belongs to this app, and replies with
+// a session token plus the reviewer profile.
+export async function signInWithGoogle(credential) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/auth/google`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential }),
+    });
+  } catch (error) {
+    throw new Error(`Could not reach the analysis service at ${API_BASE_URL}. ${error.message}`);
+  }
+
+  if (!response.ok) throw new Error(await readError(response));
+  const body = await response.json();
+
+  if (!body?.access_token || !body?.user?.email) {
+    throw new Error('Google sign in returned an unexpected response.');
+  }
+
+  return {
+    email: body.user.email,
+    name: body.user.name || body.user.email,
+    picture: body.user.picture || '',
+    provider: 'google',
+    token: body.access_token,
+  };
 }

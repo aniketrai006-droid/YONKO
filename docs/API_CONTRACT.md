@@ -22,3 +22,21 @@ Client input errors return `{ "detail": "clear message" }` with HTTP 400. Unexpe
 ## Frontend guidance
 
 Build a `FormData` object and append each selected file under `files`; do not set the multipart `Content-Type` header manually. Accept PNG, JPG, JPEG, and PDF files, render findings by field, show raw evidence and confidence, and use `source_bbox` to highlight the image or page region. Keep uploaded files client-side after the response; the service will not provide durable upload URLs. Development CORS permits Vite on ports 5173 and 3000 and can be configured with `CORS_ALLOW_ORIGINS`.
+
+## `POST /auth/google`
+
+Send `{ "credential": "<Google ID token>" }` as JSON. The service verifies the token with Google and requires `GOOGLE_CLIENT_ID` to be configured, an `aud` matching that client id, a Google `iss`, a verified email, and an unexpired `exp`. Success returns HTTP 200:
+
+```json
+{
+  "access_token": "<signed session token>",
+  "token_type": "bearer",
+  "user": { "sub": "...", "email": "...", "name": "...", "picture": "..." }
+}
+```
+
+A credential that fails any check returns HTTP 400/401 with `{ "detail": "clear message" }`; no user data is stored server-side.
+
+## `GET /auth/me`
+
+Send `Authorization: Bearer <access_token>`. A valid, unexpired token returns `{ "user": { "sub", "email", "name", "picture" } }` with HTTP 200. A missing, malformed, tampered, or expired token returns HTTP 401. Session tokens are HMAC-signed by the backend and expire after 7 days.

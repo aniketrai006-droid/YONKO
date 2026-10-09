@@ -1,8 +1,8 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { runPrecheck } from './api/precheck';
-import { analyzeFiles, signInReviewer, signUpReviewer } from './api';
+import { analyzeFiles, signInReviewer, signUpReviewer, signInWithGoogle } from './api';
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg']);
@@ -409,12 +409,74 @@ function Landing({
   );
 }
 
+const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID || '').trim();
+let googleIdentityScript = null;
+
+function loadGoogleIdentityServices() {
+  if (window.google?.accounts?.id) return Promise.resolve(window.google);
+  if (!googleIdentityScript) {
+    googleIdentityScript = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      script.onload = () => resolve(window.google);
+      script.onerror = () => reject(new Error('Google sign in could not load. Check your connection.'));
+      document.head.appendChild(script);
+    });
+  }
+  return googleIdentityScript;
+}
+
 function AccountModal({ initialMode = 'signin', onClose, onAuthenticated }) {
   const [mode, setMode] = useState(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const googleButtonRef = useRef(null);
+
+  const submitWithGoogle = async (credential) => {
+    setPending(true);
+    setError('');
+
+    try {
+      const account = await signInWithGoogle(credential);
+      onAuthenticated(account);
+    } catch (requestError) {
+      setError(requestError.message || 'Google sign in failed. Please try again.');
+    } finally {
+      setPending(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID || !googleButtonRef.current) return undefined;
+    let cancelled = false;
+
+    loadGoogleIdentityServices()
+      .then((google) => {
+        if (cancelled || !googleButtonRef.current || !google?.accounts?.id) return;
+        google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: (response) => submitWithGoogle(response.credential),
+        });
+        google.accounts.id.renderButton(googleButtonRef.current, {
+          theme: 'outline',
+          size: 'large',
+          text: 'signin_with',
+          shape: 'rectangular',
+          width: 300,
+        });
+      })
+      .catch((loadError) => {
+        if (!cancelled) setError(loadError.message);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -517,6 +579,31 @@ function AccountModal({ initialMode = 'signin', onClose, onAuthenticated }) {
               : 'Sign in →'}
           </button>
         </form>
+
+        <div className="google-auth-divider">
+          <span>or continue with</span>
+        </div>
+
+        {GOOGLE_CLIENT_ID ? (
+          <div className="google-auth-row">
+            <div ref={googleButtonRef} />
+            {pending && <span className="google-auth-pending">Verifying Google account…</span>}
+          </div>
+        ) : (
+          <>
+            <button
+              className="google-auth-disabled"
+              type="button"
+              disabled
+              title="Set VITE_GOOGLE_CLIENT_ID in a root .env file to switch Google sign in on."
+            >
+              <span className="google-g-mark">G</span> Sign in with Google
+            </button>
+            <small className="google-auth-hint">
+              Add VITE_GOOGLE_CLIENT_ID to enable Google sign in.
+            </small>
+          </>
+        )}
 
         <button
           className="account-switch"
