@@ -258,3 +258,106 @@ real PostgreSQL server with **raw SQL as `app_user`** — including that a
 SELECT with no WHERE clause returns none of another user's rows. The tests
 skip when no Postgres is reachable; CI provides one via
 `RLS_TEST_SUPERUSER_URL`.
+
+## Encryption in Transit and at Rest
+
+### Field-level encryption at rest (AES-256-GCM)
+
+`app/security/crypto.py` encrypts sensitive free text before it reaches
+the database, via the SQLAlchemy `EncryptedType` decorator:
+
+| Column | Contents |
+|---|---|
+| `findings_pg.reason` | evidence quotes (the closest thing this schema persists to raw evidence) |
+| `review_decisions.reviewer_email` | display email (reviewer_id UUID is the authoritative key) |
+| `users_pg.totp_secret` | MFA shared secret |
+
+Raw identity numbers are never persisted at all (Rule 2 — masked last-4
++ HMAC only), so there are no Aadhaar/PAN columns to encrypt.
+`users_pg.email` stays in clear because it is the login lookup key and an
+FK target; it contains synthetic-only identifiers per project rules.
+
+Token format: `enc:v1:<key_id>:<base64url(nonce[12] || ct || tag)>`.
+Each encryption uses a fresh random 96-bit nonce (equal plaintexts ?
+different ciphertexts), and the key id is authenticated as AAD so a
+payload cannot be replayed under a different key. Tampering raises
+`InvalidTokenError` — AES-GCM never returns unauthenticated data.
+
+**Keys come only from environment variables** (`DATA_KEY_V1`,
+`DATA_KEY_V2`, ...) — never from the database. `DATA_KEY_ACTIVE`
+selects which key encrypts new values; every token names the key it was
+encrypted with, so old-key rows keep decrypting during rotation. With no
+`DATA_KEY_*` set (dev/test), an auto-generated key is used and a warning
+is logged.
+
+**Searchable HMAC:** `hmac_field(value)` produces a deterministic
+HMAC-SHA256 for equality lookups on encrypted data (key: `HMAC_INDEX_KEY`
+or derived from the active data key). The `documents.id_hash` column
+already uses this pattern for cross-document identity matching.
+
+**Key rotation:**
+
+1. Generate a new key: `python -c "from app.security.crypto import generate_data_key; print(generate_data_key())"`
+2. Add `DATA_KEY_V2=<key>` to the environment and set `DATA_KEY_ACTIVE=v2`.
+3. Run `python backend/scripts/rotate_data_keys.py` (use
+   `MIGRATION_DATABASE_URL`; `--dry-run` first). It decrypts each row with
+   the key id embedded in the token and re-encrypts with the active key.
+4. Verify, then remove `DATA_KEY_V1` from the environment.
+
+Legacy `enc:<payload>` rows (pre-keyid format) still decrypt; the same
+script migrates them.
+
+### TLS in transit
+
+**API ? PostgreSQL:** the docker-compose `db` service starts with
+`ssl=on` using a self-signed certificate (generate once with
+`python backend/scripts/gen_selfsigned_cert.py`, which writes
+`docker/tls/` — gitignored). The API and Alembic connect with
+`sslmode=require`, so all DB traffic is encrypted. `require` does not
+verify the certificate chain, which is acceptable for a self-signed cert
+on a Docker-internal network where both endpoints are yours.
+
+**Production PostgreSQL:** obtain a certificate from your CA (or ACME),
+mount it into the database container as above, and change the connection
+URL to `sslmode=verify-full` so the client verifies the server certificate
+against the CA — this defeats man-in-the-middle even on untrusted
+networks.
+
+**API ? clients (reverse proxy):** uvicorn itself listens on plain HTTP
+behind the Docker network. Terminate TLS at a reverse proxy in front of
+the API. With nginx + certbot:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name api.example.gov.in;
+    ssl_certificate     /etc/letsencrypt/live/api.example.gov.in/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.example.gov.in/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    add_header Strict-Transport-Security "max-age=63072000" always;
+
+    location / {
+        proxy_pass http://api:8000;          # Docker service name
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+server {
+    listen 80;
+    server_name api.example.gov.in;
+    return 301 https://$host$request_uri;    # redirect plaintext to TLS
+}
+```
+
+With Caddy (automatic ACME certificates):
+
+```
+api.example.gov.in {
+    reverse_proxy api:8000
+}
+```
+
+Never expose port 8000 directly to the internet — the compose file maps
+it to localhost for development only. The reverse proxy is the only
+internet-facing component; everything behind it (API, DB, MinIO) stays
+on the internal Docker network.

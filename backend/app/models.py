@@ -17,6 +17,8 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from app.security.crypto import EncryptedType
+
 
 class Base(DeclarativeBase):
     """Shared declarative base for all YONKO PostgreSQL models."""
@@ -45,8 +47,9 @@ class UserPg(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
-    # Encrypted TOTP secret; NULL until the user enrols in MFA.
-    totp_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Encrypted TOTP secret (AES-256-GCM via EncryptedType — decrypted
+    # transparently on read); NULL until the user enrols in MFA.
+    totp_secret: Mapped[str | None] = mapped_column(EncryptedType, nullable=True)
     # Brute-force lockout state.
     failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -171,7 +174,10 @@ class FindingPg(Base):
     field: Mapped[str] = mapped_column(String(255), nullable=False)
     decision: Mapped[str] = mapped_column(String(50), nullable=False)
     severity: Mapped[str] = mapped_column(String(10), nullable=False)
-    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Encrypted at rest (AES-256-GCM via EncryptedType) — this free-text
+    # reason can quote raw evidence values, so it is the closest thing to
+    # a "raw evidence" column the schema persists.
+    reason: Mapped[str | None] = mapped_column(EncryptedType, nullable=True)
     similarity: Mapped[float | None] = mapped_column(Float, nullable=True)
     recommended_action: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -199,7 +205,9 @@ class ReviewDecision(Base):
         ForeignKey("users_pg.id", ondelete="SET NULL"), nullable=True
     )
     # Kept for display/back-compat with the case dashboard.
-    reviewer_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Encrypted at rest (AES-256-GCM via EncryptedType); reviewer_id above
+    # is the authoritative attribution and the only equality-lookup key.
+    reviewer_email: Mapped[str] = mapped_column(EncryptedType, nullable=False)
     decision: Mapped[str] = mapped_column(String(50), nullable=False)
     decided_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()

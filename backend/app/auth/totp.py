@@ -2,16 +2,17 @@
 
 Security rationale (steering rule 8): TOTP secrets are generated with
 pyotp's CSPRNG (base32, 32 chars ≈ 160 bits). The shared secret is stored
-AES-GCM encrypted via app.security_helpers.encrypt_field, so a database
-dump alone does not yield usable TOTP seeds. Verification accepts a
-±1 window (30 s steps) to tolerate clock skew and uses pyotp's
-constant-time comparison internally.
+AES-GCM encrypted at rest — users_pg.totp_secret uses
+app.security.crypto.EncryptedType, so the ORM encrypts on write and
+decrypts on read. The encrypt/decrypt helpers below are therefore
+pass-throughs kept for call-site compatibility; encrypting here as well
+would double-encrypt (harmless but wasteful and confusing). Verification
+accepts a ±1 window (30 s steps) and uses pyotp's constant-time
+comparison internally.
 """
 from __future__ import annotations
 
 import pyotp
-
-from app.security_helpers import decrypt_field, encrypt_field
 
 ISSUER_NAME = "YONKO"
 TOTP_DIGITS = 6
@@ -24,13 +25,13 @@ def generate_totp_secret() -> str:
 
 
 def encrypt_secret(secret: str) -> str:
-    """Encrypt the shared secret for at-rest storage."""
-    return encrypt_field(secret)
+    """Pass-through: the totp_secret column encrypts via EncryptedType."""
+    return secret
 
 
 def decrypt_secret(stored: str) -> str:
-    """Decrypt a stored shared secret for verification."""
-    return decrypt_field(stored)
+    """Pass-through: the ORM already decrypted the column on read."""
+    return stored
 
 
 def provisioning_uri(secret: str, email: str) -> str:
