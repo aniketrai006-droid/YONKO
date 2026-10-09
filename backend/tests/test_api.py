@@ -22,14 +22,15 @@ def test_health_endpoints_remain_available():
     assert client.get("/health/ocr").status_code == 200
 
 
-def test_api_info_describes_image_upload_contract():
+def test_api_info_describes_upload_contract():
     response = client.get("/api/info")
     assert response.status_code == 200
     body = response.json()
     assert body["minimum_file_count"] == 2
     assert body["maximum_file_count"] == 10
-    assert body["image_only"] is True
+    assert body["image_only"] is False
     assert ".png" in body["supported_file_types"]
+    assert ".pdf" in body["supported_file_types"]
 
 
 def test_analyze_accepts_synthetic_images_and_does_not_persist_uploads():

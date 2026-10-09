@@ -2,11 +2,11 @@
 
 ## `POST /analyze`
 
-Send a `multipart/form-data` request with 2–10 values named `files`. Each item must be a non-empty PNG, JPG, or JPEG image. Filenames must be unique within a request. The service processes files only in a private temporary directory and does not persist originals.
+Send a `multipart/form-data` request with 2–10 values named `files`. Each item must be a non-empty PNG, JPG, or JPEG image or a PDF document of at most 10 pages. Filenames must be unique within a request and each upload must declare an `image/*` or `application/pdf` content type. The service processes files only in a private temporary directory and does not persist originals: JPEGs are converted to PNG and PDF pages are rasterised to PNG (2× zoom) before detection, after which the uploaded originals are deleted.
 
 Success returns HTTP 200 and a `BundleDetectionResult` with `bundle_path`, `documents_processed`, `findings`, `summary`, and `warnings`. Each finding contains `field`, `decision`, `severity`, `reason`, optional `similarity`, complete `evidence`, and a `recommended_action`. Evidence preserves `document_type`, temporary `source_path`, `raw_value`, `normalized_value`, `comparison_key`, `source_confidence`, `source_bbox`, and `normalization_warnings`.
 
-`source_bbox` is `[x1, y1, x2, y2]` in pixels of the original submitted image. Treat `bundle_path` and `source_path` as diagnostic metadata, not stable client identifiers.
+`source_bbox` is `[x1, y1, x2, y2]` in pixels of the original submitted image, or of the rendered page image when the source was a PDF. Treat `bundle_path` and `source_path` as diagnostic metadata, not stable client identifiers.
 
 Client input errors return `{ "detail": "clear message" }` with HTTP 400. Unexpected processing failures use a generic HTTP 500 message and do not expose a traceback.
 
@@ -21,4 +21,4 @@ Client input errors return `{ "detail": "clear message" }` with HTTP 400. Unexpe
 
 ## Frontend guidance
 
-Build a `FormData` object and append each selected file under `files`; do not set the multipart `Content-Type` header manually. Render findings by field, show raw evidence and confidence, and use `source_bbox` to highlight the image region. Keep uploaded images client-side after the response; the service will not provide durable upload URLs. Development CORS permits Vite on ports 5173 and 3000 and can be configured with `CORS_ALLOW_ORIGINS`.
+Build a `FormData` object and append each selected file under `files`; do not set the multipart `Content-Type` header manually. Accept PNG, JPG, JPEG, and PDF files, render findings by field, show raw evidence and confidence, and use `source_bbox` to highlight the image or page region. Keep uploaded files client-side after the response; the service will not provide durable upload URLs. Development CORS permits Vite on ports 5173 and 3000 and can be configured with `CORS_ALLOW_ORIGINS`.
