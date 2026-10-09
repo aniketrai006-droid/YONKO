@@ -1,0 +1,11 @@
+
+services:
+  - type: web
+    name: yonko-api
+    runtime: docker
+    rootDir: backend
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: CORS_ALLOW_ORIGINS
+        sync: false           # you'll be asked for this value: your Vercel URL(s), comma-separated
