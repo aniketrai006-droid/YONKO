@@ -9,8 +9,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from app.api.auth_routes import get_current_user
+from app.auth.deps import get_current_user
 from app.db import get_connection
+from app.models import UserPg
 
 router = APIRouter(tags=["cases"])
 
@@ -138,10 +139,10 @@ def list_cases(
     status_filter: str = Query("all", alias="status"),
     page: int = 1,
     pageSize: int = 6,
-    user: dict = Depends(get_current_user),
+    user: UserPg = Depends(get_current_user),
 ) -> dict:
     with get_connection() as connection:
-        cases = _owner_cases(connection, user["email"])
+        cases = _owner_cases(connection, user.email)
 
     counts = status_counts(cases)
     needle = query.strip().lower()
@@ -168,7 +169,7 @@ def list_cases(
 
 
 @router.post("/cases")
-def create_case(body: CreateCaseBody, user: dict = Depends(get_current_user)) -> dict:
+def create_case(body: CreateCaseBody, user: UserPg = Depends(get_current_user)) -> dict:
     applicant = body.applicantName.strip()
     application_type = body.applicationType.strip()
     if not applicant:
@@ -177,7 +178,7 @@ def create_case(body: CreateCaseBody, user: dict = Depends(get_current_user)) ->
         raise HTTPException(status_code=400, detail="Application type is required.")
 
     with get_connection() as connection:
-        cases = _owner_cases(connection, user["email"])
+        cases = _owner_cases(connection, user.email)
         highest = 1000
         for item in cases:
             digits = re.sub(r"\D", "", str(item.get("id", "")))
@@ -197,12 +198,12 @@ def create_case(body: CreateCaseBody, user: dict = Depends(get_current_user)) ->
             "findings": [],
             "ignored": [],
         }
-        _save_case(connection, user["email"], created)
+        _save_case(connection, user.email, created)
     return created
 
 
 @router.post("/cases/import")
-def import_case(body: ImportCaseBody, user: dict = Depends(get_current_user)) -> dict:
+def import_case(body: ImportCaseBody, user: UserPg = Depends(get_current_user)) -> dict:
     """Move a locally created case (for example Piyush) onto this reviewer."""
     source = dict(body.case or {})
     case_id = str(source.get("id") or "").strip()
@@ -214,10 +215,10 @@ def import_case(body: ImportCaseBody, user: dict = Depends(get_current_user)) ->
     with get_connection() as connection:
         existing = connection.execute(
             "SELECT id FROM cases WHERE id = ? AND owner_email = ?",
-            (case_id, user["email"]),
+            (case_id, user.email),
         ).fetchone()
         if existing:
-            return _load_case(connection, user["email"], case_id)
+            return _load_case(connection, user.email, case_id)
         source.setdefault("notes", "")
         source.setdefault("documentCount", 0)
         source.setdefault("status", "draft")
@@ -225,13 +226,13 @@ def import_case(body: ImportCaseBody, user: dict = Depends(get_current_user)) ->
         source.setdefault("findings", [])
         source.setdefault("ignored", [])
         source.setdefault("createdAt", _now())
-        return _save_case(connection, user["email"], source)
+        return _save_case(connection, user.email, source)
 
 
 @router.get("/cases/{case_id}")
-def get_case(case_id: str, user: dict = Depends(get_current_user)) -> dict:
+def get_case(case_id: str, user: UserPg = Depends(get_current_user)) -> dict:
     with get_connection() as connection:
-        return _load_case(connection, user["email"], case_id)
+        return _load_case(connection, user.email, case_id)
 
 
 @router.patch("/cases/{case_id}/findings/{finding_id}")
@@ -239,49 +240,49 @@ def update_finding(
     case_id: str,
     finding_id: str,
     body: FindingDecisionBody,
-    user: dict = Depends(get_current_user),
+    user: UserPg = Depends(get_current_user),
 ) -> dict:
     if body.decision not in VALID_DECISIONS:
         raise HTTPException(status_code=400, detail=f"Unknown decision: {body.decision}")
     with get_connection() as connection:
-        item = _load_case(connection, user["email"], case_id)
+        item = _load_case(connection, user.email, case_id)
         decisions = dict(item.get("decisions") or {})
         decisions[finding_id] = body.decision
         item["decisions"] = decisions
         item["status"] = derive_status(item)
-        return _save_case(connection, user["email"], item)
+        return _save_case(connection, user.email, item)
 
 
 @router.patch("/cases/{case_id}/status")
 def update_case_status(
     case_id: str,
     body: CaseStatusBody,
-    user: dict = Depends(get_current_user),
+    user: UserPg = Depends(get_current_user),
 ) -> dict:
     if body.status not in VALID_STATUSES:
         raise HTTPException(status_code=400, detail=f"Unknown status: {body.status}")
     with get_connection() as connection:
-        item = _load_case(connection, user["email"], case_id)
+        item = _load_case(connection, user.email, case_id)
         item["status"] = body.status
-        return _save_case(connection, user["email"], item)
+        return _save_case(connection, user.email, item)
 
 
 @router.patch("/cases/{case_id}/notes")
 def save_notes(
-    case_id: str, body: NotesBody, user: dict = Depends(get_current_user)
+    case_id: str, body: NotesBody, user: UserPg = Depends(get_current_user)
 ) -> dict:
     with get_connection() as connection:
-        item = _load_case(connection, user["email"], case_id)
+        item = _load_case(connection, user.email, case_id)
         item["notes"] = str(body.notes or "")
-        return _save_case(connection, user["email"], item)
+        return _save_case(connection, user.email, item)
 
 
 @router.post("/cases/{case_id}/analysis")
 def attach_analysis(
-    case_id: str, body: AnalysisBody, user: dict = Depends(get_current_user)
+    case_id: str, body: AnalysisBody, user: UserPg = Depends(get_current_user)
 ) -> dict:
     with get_connection() as connection:
-        item = _load_case(connection, user["email"], case_id)
+        item = _load_case(connection, user.email, case_id)
         source = body.findings or []
         if body.documents_processed is not None:
             item["documentCount"] = body.documents_processed
@@ -348,4 +349,4 @@ def attach_analysis(
             decisions.setdefault(entry["id"], "pending")
         item["decisions"] = decisions
         item["status"] = derive_status(item)
-        return _save_case(connection, user["email"], item)
+        return _save_case(connection, user.email, item)

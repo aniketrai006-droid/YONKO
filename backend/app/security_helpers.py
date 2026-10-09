@@ -1,81 +1,20 @@
-"""Password hashing, session tokens, and field-level encryption for sensitive data."""
+"""Field-level encryption helpers (AES-256-GCM) for sensitive stored values.
+
+The legacy session-token and PBKDF2 password helpers that used to live here
+were removed together with the SQLite session auth system; password hashing
+now lives in app.auth.passwords (Argon2id) and tokens in app.auth.tokens.
+
+Key is derived from SAMANVAY_SECRET_KEY env var (required in production).
+In development, a stable key is auto-generated once and stored in
+backend/data/.encryption_key so restarts don't break existing records.
+"""
 
 from __future__ import annotations
 
 import base64
-import hashlib
-import hmac
 import os
-import secrets
-from datetime import datetime, timedelta, timezone
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-# ---------------------------------------------------------------------------
-# Time helpers
-# ---------------------------------------------------------------------------
-
-SESSION_TTL_HOURS = 8
-MAX_FAILED_ATTEMPTS = 5
-LOCKOUT_MINUTES = 15
-PBKDF2_ITERATIONS = 260_000  # NIST 2024 recommendation for SHA-256
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def session_expiry() -> str:
-    return (datetime.now(timezone.utc) + timedelta(hours=SESSION_TTL_HOURS)).isoformat()
-
-
-def is_expired(expiry_iso: str) -> bool:
-    try:
-        expiry = datetime.fromisoformat(expiry_iso)
-        return datetime.now(timezone.utc) > expiry
-    except (ValueError, TypeError):
-        return True
-
-
-# ---------------------------------------------------------------------------
-# Password hashing  (PBKDF2-HMAC-SHA256, 260k iterations)
-# ---------------------------------------------------------------------------
-
-def hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac(
-        "sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS
-    )
-    return f"{salt.hex()}${digest.hex()}"
-
-
-def verify_password(password: str, stored: str) -> bool:
-    try:
-        salt_hex, digest_hex = stored.split("$", 1)
-        salt = bytes.fromhex(salt_hex)
-    except (ValueError, AttributeError):
-        return False
-    digest = hashlib.pbkdf2_hmac(
-        "sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS
-    )
-    return hmac.compare_digest(digest.hex(), digest_hex)
-
-
-# ---------------------------------------------------------------------------
-# Session tokens
-# ---------------------------------------------------------------------------
-
-def new_token() -> str:
-    return secrets.token_urlsafe(32)
-
-
-# ---------------------------------------------------------------------------
-# Field-level encryption  (AES-256-GCM)
-#
-# Key is derived from SAMANVAY_SECRET_KEY env var (required in production).
-# In development, a stable key is auto-generated once and stored in
-# backend/data/.encryption_key so restarts don't break existing records.
-# ---------------------------------------------------------------------------
 
 _KEY_FILE_PATH = (
     __import__("pathlib").Path(__file__).resolve().parents[1]
@@ -133,12 +72,3 @@ def decrypt_field(token: str) -> str:
     raw = base64.urlsafe_b64decode(token[4:])
     nonce, ciphertext = raw[:12], raw[12:]
     return aesgcm.decrypt(nonce, ciphertext, None).decode("utf-8")
-
-
-def mask_field(value: str) -> str:
-    """Return a masked version safe for logs (e.g. '****1234')."""
-    if not value:
-        return ""
-    decrypted = decrypt_field(value)
-    visible = min(4, len(decrypted) // 3)
-    return "*" * (len(decrypted) - visible) + decrypted[-visible:]

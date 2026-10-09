@@ -1,4 +1,16 @@
-"""SQLite persistence for reviewer accounts, sessions, cases, and audit logs."""
+"""SQLite persistence for the reviewer dashboard's case store.
+
+This is NOT an authentication store. The legacy users/sessions tables and
+the SQLite audit log were removed together with the SQLite session auth
+system (auth_routes.py); all authentication now lives in PostgreSQL via
+the JWT system (app.auth + app.models). The `cases` table keeps its JSON
+payloads here because the dashboard predates the PostgreSQL layer.
+
+Security: connection settings favour durability-over-convenience pragmas,
+the DB file is chmod-ed owner-only on POSIX, and queries are parameterised
+(SQLAlchemy is not used for this legacy store — steering rule 3 allows
+parameterised sqlite3 usage).
+"""
 
 from __future__ import annotations
 
@@ -24,57 +36,57 @@ def _secure_db_file(path: Path) -> None:
         pass  # Windows — silently skip
 
 
+def _migrate_legacy_cases_schema(connection: sqlite3.Connection) -> None:
+    """Rebuild `cases` without its foreign key to the removed legacy
+    `users` table.
+
+    Existing developer databases were created when `cases.owner_email`
+    referenced `users(email)`. With the users table gone, that foreign key
+    would make every INSERT fail with "foreign key mismatch". SQLite cannot
+    drop a foreign key in place, so the table is rebuilt: create the new
+    schema, copy the rows, drop the old table.
+    """
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cases'"
+    ).fetchone()
+    if row is None or "REFERENCES users" not in (row["sql"] or ""):
+        return  # fresh DB or already migrated
+    connection.executescript(
+        """
+        CREATE TABLE cases_migrated (
+            id          TEXT NOT NULL,
+            owner_email TEXT NOT NULL,
+            payload     TEXT NOT NULL,
+            updated_at  TEXT NOT NULL,
+            PRIMARY KEY (id, owner_email)
+        );
+        INSERT INTO cases_migrated (id, owner_email, payload, updated_at)
+            SELECT id, owner_email, payload, updated_at FROM cases;
+        DROP TABLE cases;
+        ALTER TABLE cases_migrated RENAME TO cases;
+        CREATE INDEX IF NOT EXISTS idx_cases_owner ON cases(owner_email);
+        """
+    )
+
+
 def _init(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA journal_mode = WAL")   # safer concurrent writes
     connection.execute("PRAGMA synchronous = NORMAL")  # balance durability vs speed
     connection.executescript(
         """
-        CREATE TABLE IF NOT EXISTS users (
-            email           TEXT PRIMARY KEY,
-            password_hash   TEXT NOT NULL,
-            name            TEXT NOT NULL DEFAULT '',
-            dob             TEXT NOT NULL DEFAULT '',
-            created_at      TEXT NOT NULL,
-            failed_attempts INTEGER NOT NULL DEFAULT 0,
-            locked_until    TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS sessions (
-            token       TEXT PRIMARY KEY,
-            email       TEXT NOT NULL,
-            created_at  TEXT NOT NULL,
-            expires_at  TEXT NOT NULL,
-            FOREIGN KEY (email) REFERENCES users(email) ON DELETE CASCADE
-        );
-
         CREATE TABLE IF NOT EXISTS cases (
             id          TEXT NOT NULL,
             owner_email TEXT NOT NULL,
             payload     TEXT NOT NULL,
             updated_at  TEXT NOT NULL,
-            PRIMARY KEY (id, owner_email),
-            FOREIGN KEY (owner_email) REFERENCES users(email) ON DELETE CASCADE
+            PRIMARY KEY (id, owner_email)
         );
 
-        CREATE TABLE IF NOT EXISTS audit_log (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts          TEXT    NOT NULL,
-            -- Security: actor_id is an opaque HMAC-SHA256 of the email (hex, first 16 chars).
-            -- Never store raw email or other PII here. See docs/SECURITY.md.
-            actor_id    TEXT,
-            action      TEXT    NOT NULL,
-            detail      TEXT,
-            ip          TEXT
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_sessions_email ON sessions(email);
-        CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
         CREATE INDEX IF NOT EXISTS idx_cases_owner ON cases(owner_email);
-        CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id);
-        CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
         """
     )
+    _migrate_legacy_cases_schema(connection)
 
 
 @contextmanager
@@ -88,52 +100,8 @@ def get_connection():
         _secure_db_file(path)
         yield connection
         connection.commit()
-    except Exception as exc:
-        # Security: HTTPException is an intentional application response (e.g. 401,
-        # 429 from the lockout path).  Commit any pending writes (like the
-        # failed_attempts counter increment) before re-raising so that security
-        # counters are not silently discarded.  All other exceptions roll back.
-        from fastapi import HTTPException
-        if isinstance(exc, HTTPException):
-            connection.commit()
-        else:
-            connection.rollback()
+    except Exception:
+        connection.rollback()
         raise
     finally:
         connection.close()
-
-
-def _opaque_actor_id(email: str | None) -> str | None:
-    """Return a short HMAC-SHA256 of email so audit rows are linkable but not PII.
-
-    Security: raw email is never written to audit_log.  The hex digest prefix
-    is long enough for linkability within the system but not a reversible lookup.
-    """
-    if not email:
-        return None
-    import hashlib, hmac as _hmac
-    digest = _hmac.new(b"audit-actor", email.lower().encode(), hashlib.sha256).hexdigest()
-    return digest[:16]  # 64-bit prefix — sufficient for linkability, not a full hash
-
-
-def audit(connection: sqlite3.Connection, email: str | None, action: str,
-          detail: str = "", ip: str = "") -> None:
-    """Insert a row into audit_log. Call inside an open get_connection() block.
-
-    Security: email is converted to an opaque actor_id before storage so that
-    no PII is written to the audit log.  See docs/SECURITY.md.
-    """
-    from app.security import utc_now  # avoid circular import at module load
-    actor_id = _opaque_actor_id(email)
-    connection.execute(
-        "INSERT INTO audit_log (ts, actor_id, action, detail, ip) VALUES (?, ?, ?, ?, ?)",
-        (utc_now(), actor_id, action, detail, ip),
-    )
-
-
-def purge_expired_sessions(connection: sqlite3.Connection) -> None:
-    """Remove expired sessions. Call once per login to keep the table tidy."""
-    from app.security import utc_now
-    connection.execute(
-        "DELETE FROM sessions WHERE expires_at < ?", (utc_now(),)
-    )

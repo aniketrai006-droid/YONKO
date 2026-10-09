@@ -524,13 +524,13 @@ function AccountModal({
           </div>
         )}
 
-        <h2>{isProfile ? 'Tell us about you' : mode === 'signup' ? 'Register as Reviewer' : 'Welcome back'}</h2>
+        <h2>{isProfile ? 'Tell us about you' : mode === 'signup' ? 'Create your account' : 'Welcome back'}</h2>
         <p>
           {isProfile
             ? 'A few basic details so every review you sign is attributed correctly.'
             : mode === 'signup'
-            ? 'Create an account. Your email and password are stored in the reviewer database.'
-            : 'Sign in with an email you already registered. New reviewers must sign up first.'}
+            ? 'Self-registration creates a citizen account. Reviewer and admin accounts are provisioned by an administrator.'
+            : 'Sign in with an email you already registered.'}
         </p>
 
         <form onSubmit={submit}>
@@ -609,7 +609,7 @@ function AccountModal({
               : isProfile
               ? 'Save and continue →'
               : mode === 'signup'
-              ? 'Create Reviewer Account →'
+              ? 'Create Account →'
               : 'Sign in →'}
           </button>
         </form>
@@ -629,7 +629,7 @@ function AccountModal({
           >
             {mode === 'signup'
               ? 'Already registered? Sign in to your account'
-              : 'New reviewer? Click here to sign up'}
+              : 'No account yet? Click here to sign up'}
           </button>
         )}
       </section>

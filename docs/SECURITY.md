@@ -155,3 +155,56 @@ The React app keeps the JWT access and refresh tokens **in memory only**
 (`src/api/session.js` module state). Nothing is written to `localStorage`
 or `sessionStorage`; a page reload deliberately signs the user out. Any
 legacy `yonko_reviewer_session` entry in localStorage is removed at startup.
+
+## Authentication Architecture (Summary)
+
+One system, five moving parts. All endpoints that touch user data or cost
+compute go through it; the legacy SQLite session auth has been fully removed.
+
+```
+React SPA                         FastAPI                        PostgreSQL
+---------                         -------                        ----------
+tokens in memory only --Bearer--? get_current_user / require_role ? users_pg
+  (no localStorage)               ¦                                refresh_tokens
+                                  +- Argon2id verify (login)       review_decisions
+                                  +- HS256 JWT mint (15 min)       audit_log_pg
+                                  +- TOTP check (reviewer/admin)
+                                  +- lockout counter (5 / 15 min)
+```
+
+1. **Passwords — Argon2id** (`app/auth/passwords.py`). OWASP baseline
+   (19 MiB, t=2, p=1), per-hash random salt, constant-time verify.
+   Policy: =12 chars with at least one letter and one digit.
+
+2. **Sessions — short JWT access + rotating refresh** (`app/auth/tokens.py`).
+   Access tokens live 15 minutes and carry only `sub` (opaque UUID), `role`,
+   and `mfa_ok` — no PII in tokens. Refresh tokens rotate on every
+   `/auth/refresh`; only their SHA-256 is stored. Replaying a consumed
+   refresh token revokes its whole family (theft detection). Signing keys
+   are derived per token type so an access token can never be verified as a
+   refresh token. `JWT_SECRET` comes from the environment; an unset value
+   falls back to an ephemeral per-process key (tokens die on restart) rather
+   than a forgeable constant.
+
+3. **MFA — TOTP for reviewer/admin** (`app/auth/totp.py`, pyotp). Secrets
+   are stored AES-GCM encrypted. Before enrollment, a password-only login
+   yields a bootstrap token (`mfa_ok=false`) that is rejected everywhere
+   except `/auth/mfa/enroll` — an unenrolled reviewer can enroll but do
+   nothing else. After enrollment, every login requires a valid 6-digit code.
+
+4. **Roles & provisioning.** `citizen` self-registers via
+   `POST /auth/register`. `reviewer`/`admin` accounts are created only by an
+   admin via `POST /auth/admin/users` (privilege-escalation guard).
+   Authorization uses the `require_role(...)` FastAPI dependency — 401
+   unauthenticated, 403 wrong role. Reviewers additionally may only decide
+   on bundles assigned to them (`PATCH /findings/{id}`).
+
+5. **Client storage — memory only.** The React app keeps the access and
+   refresh tokens in module state (`src/api/session.js`); nothing is written
+   to `localStorage`/`sessionStorage`, so a reload signs the user out and
+   script-injection bugs cannot exfiltrate persistent credentials.
+
+Brute force: 5 failed password or TOTP attempts lock the account for 15
+minutes; locked accounts lose previously issued tokens too. Audit events
+(login, refresh reuse, provisioning, MFA enrollment) land in `audit_log_pg`
+with obfuscated actor UUIDs only — never emails, passwords, or tokens.

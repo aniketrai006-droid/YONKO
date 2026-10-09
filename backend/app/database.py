@@ -10,8 +10,8 @@ Why sync (not async)?
 All existing FastAPI routes in this project use plain `def` (synchronous)
 handlers. Introducing AsyncSession would require wrapping every route in
 async def and adding an async event loop, which is out of scope and would
-risk regressions in auth_routes.py and case_routes.py. Sync SQLAlchemy with
-psycopg2 is the correct choice here.
+risk regressions in case_routes.py and the JWT auth routes. Sync SQLAlchemy
+with psycopg2 is the correct choice here.
 """
 
 from __future__ import annotations

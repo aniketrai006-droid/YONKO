@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
@@ -31,6 +32,7 @@ from app.auth.deps import (
     MFA_REQUIRED_ROLES,
     get_current_user,
     get_user_bootstrap_or_verified,
+    require_role,
 )
 from app.auth.passwords import (
     hash_password,
@@ -70,6 +72,14 @@ class LoginBody(BaseModel):
 
 class RefreshBody(BaseModel):
     refresh_token: str = Field(min_length=1)
+
+
+class AdminCreateUserBody(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1)
+    # Only elevated roles may be provisioned here; citizens self-register
+    # via POST /auth/register (privilege-escalation guard).
+    role: Literal["reviewer", "admin"]
 
 
 # ---------------------------------------------------------------------------
@@ -428,5 +438,50 @@ def mfa_enroll(
         "digits": totp_helper.TOTP_DIGITS,
         "interval": totp_helper.TOTP_INTERVAL,
     }
+
+
+
+# ---------------------------------------------------------------------------
+# Admin user provisioning
+# ---------------------------------------------------------------------------
+
+@router.post("/admin/users", status_code=status.HTTP_201_CREATED)
+def admin_create_user(
+    body: AdminCreateUserBody,
+    admin: UserPg = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Provision a reviewer or admin account (admin only).
+
+    POST /auth/register is deliberately citizen-only, so elevated roles are
+    created here by an authenticated admin. The new account must complete
+    TOTP enrollment before its tokens become fully usable (mfa_ok gate in
+    app.auth.deps). Returns 201 with the account summary — no tokens are
+    issued, and the plaintext password is never echoed back or logged.
+    """
+    email = body.email.lower().strip()
+    policy_error = validate_password(body.password)
+    if policy_error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=policy_error
+        )
+    if _find_user(db, email):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account already exists for this email.",
+        )
+
+    user = UserPg(
+        email=email,
+        password_hash=hash_password(body.password),
+        role=body.role,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    # Audit: opaque UUIDs only — never the email or password (Rule 7).
+    _audit(db, admin.id, "ADMIN_USER_PROVISIONED")
+    _audit(db, user.id, "REGISTER")
+    return {"id": str(user.id), "email": user.email, "role": user.role}
 
 

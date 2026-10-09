@@ -1,23 +1,13 @@
-# Re-export all symbols from the pre-existing app.security_helpers module
-# so that existing imports like `from app.security import decrypt_field` continue
-# to work after app/security was promoted to a package directory.
+# app.security is a package (it hosts app.security.masking). The pre-existing
+# encryption helpers live in app.security_helpers and are re-exported here so
+# `from app.security import encrypt_field` keeps working:
 #
-# Background: the original app/security.py contained auth/crypto helpers used by
-# app.api.auth_routes and app.db. Promoting security/ to a package to add the
-# masking sub-module (app.security.masking) would shadow security.py. The file
-# was renamed to security_helpers.py and these re-exports keep backwards compat.
+#   from app.security import encrypt_field, decrypt_field   # AES-GCM field crypto
+#   from app.security.masking import mask_id, hash_id       # identity minimization
 #
-# The masking sub-module (app.security.masking) is imported explicitly by callers:
-#   from app.security.masking import mask_id, hash_id
+# The legacy session-token / PBKDF2 password re-exports were removed with the
+# SQLite auth system; use app.auth.passwords and app.auth.tokens instead.
 from app.security_helpers import (  # noqa: F401  re-export for backwards compat
     decrypt_field,
     encrypt_field,
-    hash_password,
-    is_expired,
-    new_token,
-    session_expiry,
-    utc_now,
-    verify_password,
-    LOCKOUT_MINUTES,
-    MAX_FAILED_ATTEMPTS,
 )

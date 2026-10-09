@@ -1,62 +1,60 @@
+"""Per-reviewer case isolation over the JWT-authenticated /cases endpoints.
+
+The legacy SQLite session tests that used to live here were removed together
+with auth_routes.py; account lifecycle (register/login/lockout/MFA) is now
+covered by test_auth_jwt.py, and role-gated endpoints by
+test_review_decisions.py. These tests keep the /cases isolation contract.
+"""
+from __future__ import annotations
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.auth_routes import router as auth_router
 from app.api.case_routes import router as case_router
 
 app = FastAPI()
-app.include_router(auth_router)
 app.include_router(case_router)
 client = TestClient(app)
-
-
-def _signup(email: str, password: str = "password123"):
-    return client.post("/auth/signup", json={"email": email, "password": password})
 
 
 def _auth_header(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_signin_without_signup_is_rejected():
-    response = client.post(
-        "/auth/signin",
-        json={"email": "new.reviewer@department.gov.in", "password": "password123"},
-    )
-    assert response.status_code == 401
-    assert "sign up" in response.json()["detail"].lower()
+def _login(api_db, email: str, role: str = "reviewer") -> dict:
+    """Create a synthetic user with the given role and return tokens via
+    the real /auth/login endpoint (Argon2 + JWT, no MFA enrolled yet —
+    bootstrap tokens are rejected by get_current_user for reviewers, so
+    we mint a fully-authenticated token directly instead)."""
+    from app.auth.passwords import hash_password
+    from app.auth.tokens import create_access_token
+    from app.models import UserPg
+
+    session = api_db()
+    try:
+        user = UserPg(
+            email=email,
+            password_hash=hash_password("Synthetic-Passw0rd"),
+            role=role,
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        token, _ = create_access_token(user.id, role, mfa_ok=True)
+        return {"email": user.email, "token": token}
+    finally:
+        session.close()
 
 
-def test_signup_stores_account_and_wrong_password_fails():
-    created = _signup("officer@department.gov.in")
-    assert created.status_code == 200
-    assert created.json()["email"] == "officer@department.gov.in"
-    assert created.json()["token"]
-
-    wrong = client.post(
-        "/auth/signin",
-        json={"email": "officer@department.gov.in", "password": "wrongpass"},
-    )
-    assert wrong.status_code == 401
-    assert "incorrect" in wrong.json()["detail"].lower()
-
-    ok = client.post(
-        "/auth/signin",
-        json={"email": "officer@department.gov.in", "password": "password123"},
-    )
-    assert ok.status_code == 200
-    assert ok.json()["token"]
+def test_cases_require_authentication():
+    assert client.get("/cases").status_code == 401
+    assert client.post("/cases", json={"applicantName": "X",
+                                       "applicationType": "Y"}).status_code == 401
 
 
-def test_duplicate_signup_is_rejected():
-    _signup("repeat@department.gov.in")
-    again = _signup("repeat@department.gov.in")
-    assert again.status_code == 409
-
-
-def test_cases_are_isolated_per_reviewer():
-    first = _signup("piyush.owner@department.gov.in").json()
-    second = _signup("other.reviewer@department.gov.in").json()
+def test_cases_are_isolated_per_reviewer(api_db):
+    first = _login(api_db, "owner-a@synthetic.example.com")
+    second = _login(api_db, "owner-b@synthetic.example.com")
 
     created = client.post(
         "/cases",
@@ -80,30 +78,9 @@ def test_cases_are_isolated_per_reviewer():
     assert leaked.status_code == 404
 
 
-def test_brute_force_lockout_returns_429():
-    """Fire MAX_FAILED_ATTEMPTS wrong passwords; the next attempt must return 429."""
-    from app.security import MAX_FAILED_ATTEMPTS
-
-    email = "lockout.test@department.gov.in"
-    _signup(email, password="correct-password123")
-
-    # Submit wrong passwords up to the threshold; each must be ≥8 chars to pass
-    # the format-validation layer and actually reach the DB lockout counter.
-    for i in range(MAX_FAILED_ATTEMPTS):
-        resp = client.post(
-            "/auth/signin",
-            json={"email": email, "password": "wrongpassword123"},
-        )
-        # Each attempt before the account is locked returns 401
-        assert resp.status_code == 401, (
-            f"Expected 401 on attempt {i + 1}, got {resp.status_code}"
-        )
-
-    # The account is now locked — even a correct password must be rejected with 429
-    locked_resp = client.post(
-        "/auth/signin",
-        json={"email": email, "password": "correct-password123"},
+def test_invalid_token_rejected():
+    response = client.get(
+        "/cases", headers=_auth_header("not.a.real.token")
     )
-    assert locked_resp.status_code == 429, (
-        f"Expected 429 after {MAX_FAILED_ATTEMPTS} failed attempts, got {locked_resp.status_code}"
-    )
+    assert response.status_code == 401
+

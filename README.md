@@ -12,7 +12,9 @@ The easiest way on Windows is the bundled script. It creates `.venv` if it is mi
 .\start-backend.ps1            # add -Reload for auto-reload, -Port to change the port
 ```
 
-`YONKO_SESSION_SECRET` is generated once and appended to `.env`, so reviewer sessions survive restarts. To start the server by hand instead:
+`JWT_SECRET` should be set in `.env` (see `.env.example`); when it is
+unset the backend generates an ephemeral per-process signing key and all
+tokens are invalidated on restart. To start the server by hand instead:
 
 ```powershell
 cd backend
@@ -73,7 +75,14 @@ VITE_API_BASE_URL=http://localhost:8000
 
 ## Reviewer sign in
 
-The reviewer portal offers **Email and password** authentication for reviewers. Accounts are saved in local storage for the demo with profile onboarding (name and date of birth).
+Authentication is handled by the backend JWT system (`/auth/login`,
+`/auth/register`, `/auth/refresh`, `/auth/logout`). The frontend keeps
+tokens in memory only — reloading the page signs you out. Citizens
+self-register; reviewer and admin accounts are provisioned by an admin
+via `POST /auth/admin/users`. Reviewers and admins additionally need a
+TOTP code from an authenticator app at login (enroll via
+`POST /auth/mfa/enroll`). See [docs/SECURITY.md](docs/SECURITY.md) for
+the full authentication architecture.
 
 ## Analysis request
 

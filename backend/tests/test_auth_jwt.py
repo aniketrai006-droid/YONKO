@@ -632,3 +632,179 @@ def test_password_is_stored_as_argon2_hash(client, session_factory):
         session.close()
 
 
+
+# ---------------------------------------------------------------------------
+# 9. Admin user provisioning (POST /auth/admin/users)
+# ---------------------------------------------------------------------------
+
+def _provision_admin(session_factory, email: str = "root-admin@synthetic.example.com") -> dict:
+    """Create an admin directly in the DB and return fully-authenticated headers."""
+    from app.auth.passwords import hash_password
+    from app.auth.tokens import create_access_token
+
+    session = session_factory()
+    try:
+        user = UserPg(
+            email=email,
+            password_hash=hash_password(PASSWORD),
+            role="admin",
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        token, _ = create_access_token(user.id, "admin", mfa_ok=True)
+        return {"Authorization": f"Bearer {token}"}
+    finally:
+        session.close()
+
+
+def test_admin_provisions_reviewer_account(client, session_factory):
+    admin_headers = _provision_admin(session_factory)
+    response = client.post(
+        "/auth/admin/users",
+        headers=admin_headers,
+        json={
+            "email": "provisioned@synthetic.example.com",
+            "password": PASSWORD,
+            "role": "reviewer",
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["role"] == "reviewer"
+    assert body["email"] == "provisioned@synthetic.example.com"
+
+    # The provisioned reviewer can log in with the password they were given.
+    login = _login(client, "provisioned@synthetic.example.com")
+    assert login.status_code == 200
+    assert login.json()["user"]["role"] == "reviewer"
+
+
+def test_admin_provisions_admin_account(client, session_factory):
+    admin_headers = _provision_admin(session_factory, "first-admin@synthetic.example.com")
+    response = client.post(
+        "/auth/admin/users",
+        headers=admin_headers,
+        json={
+            "email": "second-admin@synthetic.example.com",
+            "password": PASSWORD,
+            "role": "admin",
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["role"] == "admin"
+
+
+def test_admin_provisioning_requires_authentication(client):
+    response = client.post(
+        "/auth/admin/users",
+        json={"email": "x@synthetic.example.com", "password": PASSWORD,
+              "role": "reviewer"},
+    )
+    assert response.status_code == 401
+
+
+def test_reviewer_cannot_provision_users(client, session_factory):
+    _provision_reviewer(client, session_factory, "sneaky-reviewer@synthetic.example.com")
+    tokens = _login(client, "sneaky-reviewer@synthetic.example.com").json()
+    provisioning = _enroll_mfa(client, tokens)
+    tokens = _login(
+        client, "sneaky-reviewer@synthetic.example.com",
+        totp_code=_totp_code(provisioning),
+    ).json()
+    response = client.post(
+        "/auth/admin/users",
+        headers=_auth_header(tokens),
+        json={"email": "victim@synthetic.example.com", "password": PASSWORD,
+              "role": "admin"},
+    )
+    assert response.status_code == 403
+
+
+def test_citizen_cannot_provision_users(client, session_factory):
+    _register(client, "ordinary-citizen@synthetic.example.com")
+    tokens = _login(client, "ordinary-citizen@synthetic.example.com").json()
+    response = client.post(
+        "/auth/admin/users",
+        headers=_auth_header(tokens),
+        json={"email": "escalate@synthetic.example.com", "password": PASSWORD,
+              "role": "admin"},
+    )
+    assert response.status_code == 403
+
+def test_admin_provisioning_rejects_weak_password(client, session_factory):
+    admin_headers = _provision_admin(session_factory)
+    response = client.post(
+        "/auth/admin/users",
+        headers=admin_headers,
+        json={"email": "weak-pw@synthetic.example.com", "password": "short1",
+              "role": "reviewer"},
+    )
+    assert response.status_code == 400
+
+
+def test_admin_provisioning_rejects_citizen_role(client, session_factory):
+    """The provisioning endpoint only elevates; citizens go through /auth/register."""
+    admin_headers = _provision_admin(session_factory)
+    response = client.post(
+        "/auth/admin/users",
+        headers=admin_headers,
+        json={"email": "nope@synthetic.example.com", "password": PASSWORD,
+              "role": "citizen"},
+    )
+    assert response.status_code == 422  # Literal["reviewer", "admin"] fails
+
+
+def test_admin_provisioning_rejects_duplicate_email(client, session_factory):
+    admin_headers = _provision_admin(session_factory)
+    payload = {"email": "dup-provision@synthetic.example.com",
+               "password": PASSWORD, "role": "reviewer"}
+    first = client.post("/auth/admin/users", headers=admin_headers, json=payload)
+    assert first.status_code == 201
+    again = client.post("/auth/admin/users", headers=admin_headers, json=payload)
+    assert again.status_code == 409
+
+
+def test_provisioned_account_needs_mfa_before_privileged_use(client, session_factory):
+    """A provisioned reviewer's password-only token is bootstrap-only."""
+    admin_headers = _provision_admin(session_factory)
+    client.post(
+        "/auth/admin/users",
+        headers=admin_headers,
+        json={"email": "fresh-reviewer@synthetic.example.com",
+              "password": PASSWORD, "role": "reviewer"},
+    )
+    tokens = _login(client, "fresh-reviewer@synthetic.example.com").json()
+    assert tokens["mfa_ok"] is False
+    # Bootstrap tokens cannot reach authenticated endpoints for reviewers.
+    me = client.get("/auth/me", headers=_auth_header(tokens))
+    assert me.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# 10. Legacy SQLite auth endpoints are gone
+# ---------------------------------------------------------------------------
+
+def test_legacy_signup_endpoint_is_removed(client):
+    response = client.post(
+        "/auth/signup",
+        json={"email": "legacy@synthetic.example.com", "password": PASSWORD},
+    )
+    assert response.status_code == 404  # /auth/signup no longer exists
+
+
+def test_legacy_signin_endpoint_is_removed(client):
+    response = client.post(
+        "/auth/signin",
+        json={"email": "legacy@synthetic.example.com", "password": PASSWORD},
+    )
+    assert response.status_code == 404
+
+
+def test_legacy_profile_endpoint_is_removed(client):
+    response = client.post(
+        "/auth/profile", json={"name": "Legacy", "dob": "1990-01-01"}
+    )
+    assert response.status_code == 404
+
+

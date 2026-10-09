@@ -6,7 +6,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth_jwt_routes import router as auth_jwt_router
-from app.api.auth_routes import router as auth_router
 from app.api.case_routes import router as case_router
 from app.api.review_routes import router as review_router
 from app.api.routes import router as api_router
@@ -57,14 +56,12 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
-# The JWT auth router is mounted BEFORE the legacy SQLite session router so
-# its /auth/logout, etc. take precedence. The legacy router remains only for
-# the not-yet-migrated frontend flows (signup/signin/profile) and will be
-# removed once the frontend switches to JWT endpoints.
+# All authentication flows through the JWT auth router. The legacy SQLite
+# session router (auth_routes.py) has been removed; /cases uses the same
+# JWT get_current_user dependency as the rest of the API.
 app.include_router(auth_jwt_router)
 app.include_router(api_router)
 app.include_router(review_router)
-app.include_router(auth_router)
 app.include_router(case_router)
 
 
