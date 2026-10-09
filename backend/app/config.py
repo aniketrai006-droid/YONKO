@@ -54,6 +54,29 @@ class Settings(BaseSettings):
         "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000"
     )
 
+    # ---------------------------------------------------------------------------
+    # JWT authentication (Part A: register/login/refresh/logout/me + MFA)
+    # ---------------------------------------------------------------------------
+
+    # Secret used to sign access and refresh JWTs (HS256).
+    # Security: MUST be a strong random string in production
+    # (generate: python -c "import secrets; print(secrets.token_hex(32))").
+    # When empty the app falls back to an ephemeral per-process dev key and
+    # logs a startup warning — tokens then invalidate on every restart, so an
+    # empty value can never produce a forgeable *constant* signing key.
+    JWT_SECRET: str = ""
+
+    # Access tokens are deliberately short-lived (steering rule: 15 minutes).
+    AUTH_ACCESS_TOKEN_TTL_MINUTES: int = 15
+
+    # Refresh tokens live longer and are rotated on every /auth/refresh call.
+    # Each token's SHA-256 is stored server-side so reuse can be detected.
+    AUTH_REFRESH_TOKEN_TTL_DAYS: int = 7
+
+    # Account lockout after repeated failed logins.
+    AUTH_MAX_FAILED_ATTEMPTS: int = 5
+    AUTH_LOCKOUT_MINUTES: int = 15
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

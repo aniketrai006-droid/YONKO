@@ -25,11 +25,13 @@ class Base(DeclarativeBase):
 
 class UserPg(Base):
     """
-    Reviewer / operator accounts.
+    Reviewer / operator / citizen accounts for the JWT auth system.
 
-    Security: password_hash stores only a bcrypt hash, never the plaintext
-    password. The role column is restricted to known values ('reviewer',
-    'admin') by application logic and tested via 403 checks.
+    Security: password_hash stores only an Argon2id hash, never the plaintext
+    password. The role column is restricted to known values ('citizen',
+    'reviewer', 'admin') by application logic and tested via 403 checks.
+    totp_secret holds an AES-GCM-encrypted TOTP shared secret (see
+    app.security_helpers.encrypt_field) — never plaintext.
     """
     __tablename__ = "users_pg"
 
@@ -43,10 +45,18 @@ class UserPg(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
+    # Encrypted TOTP secret; NULL until the user enrols in MFA.
+    totp_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Brute-force lockout state.
+    failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Relationships
     bundles: Mapped[list["Bundle"]] = relationship(
         "Bundle", back_populates="owner", cascade="all, delete-orphan"
+    )
+    refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
+        "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )
 
 
@@ -172,6 +182,42 @@ class ReviewDecision(Base):
     finding: Mapped["FindingPg"] = relationship(
         "FindingPg", back_populates="review_decisions"
     )
+
+
+class RefreshToken(Base):
+    """
+    Server-side record of issued refresh tokens (JWT auth system).
+
+    Security: only the SHA-256 hash of the token is stored — the raw token
+    exists solely in the client's possession. Rotation marks the old row
+    used=True and issues a new row in the same family. Presenting an already
+    used or revoked token is treated as theft and revokes the entire family
+    (OAuth 2.1 BCP, RFC 9700 §4.14.2).
+    """
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users_pg.id", ondelete="CASCADE"), nullable=False
+    )
+    # SHA-256 hex digest of the refresh JWT.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # All tokens descended from one login share a family id; reuse of an old
+    # token revokes every outstanding token in the family.
+    family_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("refresh_tokens.id", ondelete="CASCADE"), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+
+    # Relationships
+    user: Mapped["UserPg"] = relationship("UserPg", back_populates="refresh_tokens")
 
 
 # Security: no PII stored in audit_log_pg. actor_id is an opaque identifier.

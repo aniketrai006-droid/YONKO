@@ -63,7 +63,7 @@ def db(engine):
 # ---------------------------------------------------------------------------
 
 def test_all_tables_create(engine):
-    """All six expected tables must exist in the schema."""
+    """All seven expected tables must exist in the schema."""
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
     expected = {
@@ -73,6 +73,7 @@ def test_all_tables_create(engine):
         "findings_pg",
         "review_decisions",
         "audit_log_pg",
+        "refresh_tokens",
     }
     assert expected == table_names, (
         f"Missing tables: {expected - table_names}; "

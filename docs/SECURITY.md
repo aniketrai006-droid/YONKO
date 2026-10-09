@@ -61,3 +61,59 @@ MinIO server's key material.
 
 The MinIO service is gated behind a Docker Compose profile (`--profile uploads`) so
 it does not start in default development mode.
+
+## Authentication (JWT + TOTP MFA)
+
+### Password Storage
+
+Passwords are hashed with **Argon2id** (argon2-cffi, OWASP baseline: 19 MiB
+memory, 2 iterations). Each hash embeds a random salt. Plaintext passwords
+are never stored or logged. A minimum policy applies at registration:
+at least 12 characters with one letter and one digit (NIST SP 800-63B
+favors length over complexity rules).
+
+### Token Design
+
+- **Access tokens** are HS256 JWTs with a 15-minute TTL. Claims are limited
+to `sub` (opaque user UUID), `role`, and `mfa_ok` — no email or other PII
+is placed in tokens (Rule 7). Signing keys are derived per token type via
+HMAC so an access token can never be replayed as a refresh token.
+- **Refresh tokens** are rotated on every `/auth/refresh` call. Only the
+SHA-256 of each issued token is stored (in `refresh_tokens`). Presenting a
+consumed token is treated as theft and revokes the entire token family
+(RFC 9700, section 4.14.2).
+- `JWT_SECRET` comes from the environment. When unset, an ephemeral
+per-process key is generated and a warning is logged — a deployment can
+therefore never fall back to a *constant* forgeable secret.
+
+### Roles and MFA
+
+Roles are `citizen`, `reviewer`, and `admin`. Self-registration only creates
+citizens; reviewer/admin accounts are provisioned out of band
+(privilege-escalation guard). Every privileged route uses the
+`require_role(...)` FastAPI dependency (401 unauthenticated, 403 wrong role).
+
+TOTP MFA (pyotp) is **required for reviewer and admin**:
+
+1. Before enrollment, a password-only login yields a *bootstrap* token
+(`mfa_ok=false`). Bootstrap tokens are rejected everywhere except
+`/auth/mfa/enroll`, so an unenrolled reviewer can enroll but do nothing else.
+2. `/auth/mfa/enroll` returns an `otpauth://` provisioning URI; the shared
+secret is stored AES-GCM encrypted, never in plaintext.
+3. After enrollment, login requires a valid 6-digit TOTP code (±1 interval
+window for clock skew). Only then do tokens carry `mfa_ok=true`.
+
+### Account Lockout
+
+After `AUTH_MAX_FAILED_ATTEMPTS` (default 5) failed password or TOTP
+attempts the account is locked for `AUTH_LOCKOUT_MINUTES` (default 15).
+Locked accounts cannot log in **and** previously issued tokens are rejected
+by `get_current_user`. Login responses never reveal whether an email exists
+(uniform 401 message, dummy hash comparison for timing parity).
+
+### Audit Trail
+
+Auth events (REGISTER, LOGIN_OK, LOGIN_FAILED, LOGIN_FAILED_MFA,
+LOGIN_BLOCKED_LOCKED, REFRESH_OK, REFRESH_REUSE_DETECTED, LOGOUT,
+MFA_ENROLL) are written to `audit_log_pg` with the opaque user UUID as
+`actor_id` — never emails, passwords, or tokens (Rule 7).
