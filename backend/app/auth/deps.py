@@ -81,6 +81,14 @@ def _resolve_user(
             "code at login."
         )
 
+    # Bind the verified identity to the DB session for Row-Level Security.
+    # Values come from the UserPg row loaded above (server-side), never from
+    # client-supplied headers or body fields. Placed AFTER every check so a
+    # rejected request never receives a database identity.
+    from app.database import set_rls_context
+
+    set_rls_context(db, user.id, user.role)
+
     return user
 
 

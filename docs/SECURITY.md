@@ -208,3 +208,53 @@ Brute force: 5 failed password or TOTP attempts lock the account for 15
 minutes; locked accounts lose previously issued tokens too. Audit events
 (login, refresh reuse, provisioning, MFA enrollment) land in `audit_log_pg`
 with obfuscated actor UUIDs only — never emails, passwords, or tokens.
+
+## PostgreSQL Row-Level Security (Defence in Depth)
+
+From migration 0006 the database itself enforces access control — even a
+compromised API process or a SQL-injection bug cannot read another user's
+rows, because the filtering happens inside PostgreSQL, not in Python.
+
+### Database roles
+
+| Role              | Used by            | Privileges |
+|-------------------|--------------------|------------|
+| `app_user`        | the running API    | SELECT/INSERT/UPDATE on app tables; **INSERT-only** on `audit_log_pg`; no DELETE anywhere; no DDL; not superuser |
+| `migration_user`  | `alembic upgrade`  | owns the schema (table owner bypasses RLS); not used at runtime |
+
+Passwords come from `APP_DB_PASSWORD` / `MIGRATION_USER_PASSWORD` (env only).
+The API's `DATABASE_URL` connects as `app_user`; Alembic uses
+`MIGRATION_DATABASE_URL` when set (see `docker-compose.yml`).
+
+### Policies
+
+RLS is ENABLEd on `bundles`, `documents`, `findings_pg` and
+`review_decisions`. Policies read two session GUCs — `app.current_user_id`
+and `app.current_role` — set with **SET LOCAL** from the verified JWT
+subject in `get_current_user` (never from client input):
+
+- **admin** sees and writes all rows.
+- **citizen** sees rows where `owner_id` is their own user id.
+- **reviewer** sees rows on bundles where `assigned_reviewer_id` is theirs.
+- Child tables (documents, findings, decisions) are filtered through their
+  parent bundle, so one ownership rule covers the whole graph.
+- `review_decisions` writes are restricted to admin or the *assigned*
+  reviewer at the DB layer — citizens cannot insert decisions even if the
+  API's `require_role` check were bypassed.
+
+**Fail-closed:** if the GUCs are unset (e.g. a bare `psql` session as
+`app_user`), every policy evaluates to NULL and no rows are visible.
+
+### Audit log tamper-evidence
+
+`audit_log_pg` is **INSERT-only** for `app_user`: no SELECT (cannot read
+the trail back), no UPDATE, no DELETE (cannot tamper). Retention and
+expiry are offline operations performed as `migration_user`.
+
+### Tests
+
+`backend/tests/test_rls_postgres.py` verifies all of the above against a
+real PostgreSQL server with **raw SQL as `app_user`** — including that a
+SELECT with no WHERE clause returns none of another user's rows. The tests
+skip when no Postgres is reachable; CI provides one via
+`RLS_TEST_SUPERUSER_URL`.

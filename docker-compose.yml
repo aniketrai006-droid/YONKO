@@ -39,9 +39,14 @@ services:
     env_file:
       - .env
     environment:
-      # Override DATABASE_URL to point at the db service hostname inside Docker.
-      # This takes precedence over any DATABASE_URL in .env.
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-yonko}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-yonko}
+      # The API connects as the least-privilege app_user so PostgreSQL
+      # Row-Level Security applies to every request (see migration 0006).
+      # APP_DB_PASSWORD flows in from .env via env_file above.
+      DATABASE_URL: postgresql+psycopg2://app_user:${APP_DB_PASSWORD:-changeme-app-user}@db:5432/${POSTGRES_DB:-yonko}
+      # Alembic inside the container still bootstraps with the superuser
+      # (it must create roles on the very first run). After migration 0006
+      # you can point this at migration_user instead — see .env.example.
+      MIGRATION_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-yonko}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-yonko}
     depends_on:
       db:
         condition: service_healthy

@@ -10,6 +10,7 @@ Security: this file contains no hardcoded credentials. All connection
 details come from the environment via app.config.settings.
 """
 
+import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -31,9 +32,13 @@ from app.config import settings  # noqa: E402
 # Alembic Config object — access to values in the .ini file.
 config = context.config
 
-# Override sqlalchemy.url from app.config so there is one source of truth.
-# This means `alembic upgrade head` uses exactly the same URL as the FastAPI app.
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Override sqlalchemy.url so there is one source of truth.
+# MIGRATION_DATABASE_URL (migration_user credentials) takes precedence over
+# DATABASE_URL (app_user credentials) so that DDL runs with the elevated
+# migration role while the API connects with least privilege.
+# This means `alembic upgrade head` uses the migration role when configured.
+_migration_url = os.environ.get("MIGRATION_DATABASE_URL") or settings.DATABASE_URL
+config.set_main_option("sqlalchemy.url", _migration_url)
 
 # Set up Python logging from the alembic.ini [loggers] section.
 if config.config_file_name is not None:

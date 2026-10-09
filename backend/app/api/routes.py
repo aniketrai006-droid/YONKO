@@ -88,7 +88,7 @@ def _render_pdfs(temp_dir: Path) -> None:
 # No file bytes or PII are stored — only document types, field names, and decisions.
 
 def _persist_bundle(
-    result: BundleDetectionResult, temp_dir: Path, owner_email: str
+    result: BundleDetectionResult, temp_dir: Path, user: UserPg
 ) -> None:
     """
     Write a Bundle row, one Document row per unique document type, and one
@@ -98,9 +98,10 @@ def _persist_bundle(
     Identity fields (id_number, account_number) are stored as masked last-4
     and HMAC-SHA256 hash only — never as raw values. See Rule 2 of steering file.
 
-    owner_email is the authenticated caller's email (the route dependency
-    guarantees a valid user); the bundles.owner_email FK therefore always
-    references a real users_pg row.
+    user is the authenticated caller (the route dependency guarantees a
+    valid UserPg); the bundles.owner_email/owner_id columns therefore always
+    reference a real users_pg row, and the RLS context is bound to this
+    function's own session so the INSERTs pass the citizen WITH CHECK policy.
 
     The session is opened and closed entirely inside this function so that the
     /analyze route signature stays unchanged (no db: Session = Depends(...)
@@ -113,12 +114,21 @@ def _persist_bundle(
 
     db = next(get_db())
     try:
+        # Bind the verified caller to this session for Row-Level Security —
+        # without this the INSERTs would run with no identity and the
+        # bundles WITH CHECK policy would fail closed.
+        from app.database import set_rls_context
+
+        set_rls_context(db, user.id, user.role)
+
         # Create Bundle row — bundle_ref is the temp-dir name for diagnostics only,
         # not a reconstructable filesystem path after the temp dir is deleted.
         bundle = Bundle(
             # Authenticated caller (guaranteed by the /analyze dependency);
             # satisfies the bundles.owner_email FK with a real users_pg row.
-            owner_email=owner_email,
+            owner_email=user.email,
+            # Authoritative owner pointer for PostgreSQL RLS.
+            owner_id=user.id,
             bundle_ref=temp_dir.name,
         )
         db.add(bundle)
@@ -315,7 +325,7 @@ async def analyze(
         # No file bytes or PII are stored — only document types, field names, and decisions.
         if settings.PERSIST_RESULTS:
             try:
-                _persist_bundle(result, temp_dir, owner_email=user.email)
+                _persist_bundle(result, temp_dir, user)
             except Exception:
                 # A DB write failure must never surface as an HTTP error.
                 # Log the exception for operator visibility without exposing

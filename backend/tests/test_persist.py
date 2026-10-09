@@ -253,7 +253,7 @@ def test_persist_failure_does_not_break_analyze(monkeypatch, override_db):
     monkeypatch.setattr(config_module.settings, "PERSIST_RESULTS", True)
 
     # Simulate a DB failure by making _persist_bundle raise unconditionally
-    def _broken_persist(result, temp_dir, owner_email=None):
+    def _broken_persist(result, temp_dir, user=None):
         raise RuntimeError("Simulated database write failure")
 
     monkeypatch.setattr(routes_module, "_persist_bundle", _broken_persist)

@@ -88,6 +88,12 @@ class Bundle(Base):
     )
     # Temp dir name for diagnostics only — no filesystem reconstruction possible
     bundle_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    # UUID ownership pointer — the authoritative owner for PostgreSQL
+    # Row-Level Security (citizen policy: owner_id = app.current_user_id).
+    # owner_email is kept for the SQLite dashboard and FK compatibility.
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users_pg.id", ondelete="SET NULL"), nullable=True
+    )
     # Reviewer assigned to this bundle. NULL = unassigned; only this reviewer
     # (or an admin) may record decisions on the bundle's findings.
     assigned_reviewer_id: Mapped[uuid.UUID | None] = mapped_column(
