@@ -12,8 +12,6 @@
 #   docker compose exec api alembic upgrade head  # run migrations
 #   docker compose down -v        # tear down (removes pgdata volume)
 
-version: "3.9"
-
 services:
   db:
     image: postgres:16-alpine
@@ -56,8 +54,11 @@ services:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      # Bind to loopback only so the S3 API and admin console are not reachable
+      # from other hosts on the network. The api service reaches MinIO via the
+      # backend_net hostname (minio:9000) without touching these host ports.
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
