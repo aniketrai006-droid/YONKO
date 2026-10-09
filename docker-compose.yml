@@ -1,0 +1,63 @@
+# docker-compose.yml — YONKO development stack
+#
+# Services:
+#   db   — PostgreSQL 16 on the internal backend_net network only.
+#          NO published host port by design: the database is not reachable from
+#          outside Docker, reducing the attack surface.
+#   api  — FastAPI application, reachable at http://localhost:8000.
+#
+# Usage:
+#   cp .env.example .env          # fill in real values
+#   docker compose up --build -d  # start both services
+#   docker compose exec api alembic upgrade head  # run migrations
+#   docker compose down -v        # tear down (removes pgdata volume)
+
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-yonko}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-yonko}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - backend_net
+    # Security: no ports: section — the DB is intentionally unreachable from the host.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-yonko} -d ${POSTGRES_DB:-yonko}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Override DATABASE_URL to point at the db service hostname inside Docker.
+      # This takes precedence over any DATABASE_URL in .env.
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-yonko}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-yonko}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend_net
+      - default   # also on the default bridge so the host can reach port 8000
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    driver: local
+
+networks:
+  backend_net:
+    # internal: true means containers on this network cannot reach the internet
+    # and the host cannot reach containers on this network directly.
+    internal: true

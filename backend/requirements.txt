@@ -1,3 +1,4 @@
+alembic==1.16.1
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
@@ -16,7 +17,9 @@ opentelemetry-api==1.45.1
 packaging==26.3
 pillow==12.3.0
 pluggy==1.6.0
+psycopg2-binary==2.9.10
 pydantic==2.14.0
+pydantic-settings==2.9.1
 python-multipart==0.0.22
 pydantic_core==2.50.0
 Pygments==2.21.0
@@ -24,6 +27,7 @@ pymupdf==1.28.2
 pytesseract==0.3.13
 pytest==9.1.1
 RapidFuzz==3.14.6
+sqlalchemy==2.0.41
 starlette==1.7.0
 truststore==0.10.4
 typing-inspection==0.4.4

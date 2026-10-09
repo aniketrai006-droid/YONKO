@@ -1,0 +1,27 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "Infrastructure foundation: pydantic-settings config, .env.example, requirements.txt updates, Dockerfile, docker-compose.yml. This FEAT does not touch any existing app code — it only adds new files and updates the dependency manifest. Independent of FEAT-002 and FEAT-003 in terms of file changes, but FEAT-002 and FEAT-003 depend on the packages it installs.",
+  "status": "completed",
+  "steps": [
+    "Update backend/requirements.txt: add sqlalchemy==2.0.41, alembic==1.16.1, psycopg2-binary==2.9.10, pydantic-settings==2.9.1. Pin exact versions. Do not remove any existing entry.",
+    "Create backend/app/config.py using pydantic-settings BaseSettings. Fields: DATABASE_URL (str, default 'sqlite+pysqlite:///./backend/data/samanvay.sqlite' so the app boots without Postgres for local dev), PERSIST_RESULTS (bool, default False), SECRET_KEY (str, default ''), CORS_ALLOW_ORIGINS (str, default 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000'). Use model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore'). Export a module-level singleton: settings = Settings(). Add a short comment explaining each field's security purpose.",
+    "Create .env.example at the project root with placeholder values for: DATABASE_URL, PERSIST_RESULTS, SAMANVAY_SECRET_KEY, SAMANVAY_DB_PATH, YONKO_SESSION_SECRET, CORS_ALLOW_ORIGINS. Every value must be a placeholder (e.g. 'your-secret-here', 'postgresql+psycopg2://yonko:changeme@db:5432/yonko'). Add a header comment: '# Copy to .env and fill in real values. Never commit .env.'",
+    "Create backend/Dockerfile: use python:3.12-slim base (not 3.14 — slim image stability). Install system deps: tesseract-ocr, libgl1, libglib2.0-0 (for opencv-headless). Copy backend/requirements.txt, pip install. Copy backend/app and backend/alembic (once created by FEAT-002). Set WORKDIR /app. CMD: uvicorn app.main:app --host 0.0.0.0 --port 8000. Include a comment that Tesseract is bundled for container use.",
+    "Create docker-compose.yml at project root with two services: 'db' (image: postgres:16-alpine, env POSTGRES_USER/PASSWORD/DB from env vars, volumes: pgdata:/var/lib/postgresql/data, networks: internal only — NO ports: section) and 'api' (build: ./backend, ports: '8000:8000', env_file: .env, environment: DATABASE_URL overriding to point at db service, depends_on: db, networks: internal + default so the host can reach :8000). Define named volume pgdata and network backend_net (internal: true). Add healthcheck on db service using pg_isready."
+  ],
+  "acceptance_criteria": [
+    "backend/requirements.txt contains sqlalchemy==2.0.41, alembic==1.16.1, psycopg2-binary==2.9.10, pydantic-settings==2.9.1 with no removals of existing packages",
+    "backend/app/config.py imports cleanly: `python -c 'from app.config import settings; print(settings.PERSIST_RESULTS)'` prints False",
+    "docker-compose.yml has a db service with no published host port and an api service on port 8000",
+    ".env.example exists at the project root with only placeholder values and no real secrets",
+    "backend/Dockerfile uses python:3.12-slim and installs tesseract-ocr",
+    "All existing pytest tests still pass: cd backend && pytest -q --basetemp .pytest-tmp"
+  ],
+  "verification": [
+    "cd backend && pytest -q --basetemp .pytest-tmp",
+    "cd backend && python -c \"from app.config import settings; assert settings.PERSIST_RESULTS is False; print('config OK')\""
+  ],
+  "blocked_reason": null,
+  "findings": "psycopg2-binary==2.9.10 cannot be installed on Windows without PostgreSQL build tools (pg_config missing). This is expected for local Windows dev; the package is for container use. All other packages install cleanly. The 7 pre-existing test failures are all Tesseract/OCR related (Tesseract not installed on Windows dev machine) — not caused by FEAT-001 changes. Verified: config OK, 60 non-OCR tests pass, no regressions introduced."
+}
