@@ -103,6 +103,19 @@ class Document(Base):
     document_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     page_count: Mapped[int] = mapped_column(Integer, default=1)
 
+    # Data-minimization columns — Rule 2 of the steering file.
+    # masked_value: last-4 representation of the primary identity field (if present).
+    # id_hash: HMAC-SHA256 of the raw identity value — for cross-document matching.
+    # Neither stores the raw identity number.
+    masked_value: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    id_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # PERSIST_UPLOADS columns — populated only when PERSIST_UPLOADS=True.
+    # file_hash: hex SHA-256 of the original file bytes.
+    # storage_key: MinIO object key. File bytes never enter this table.
+    file_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    storage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Relationships
     bundle: Mapped["Bundle"] = relationship("Bundle", back_populates="documents")
 

@@ -30,6 +30,24 @@ class Settings(BaseSettings):
     # be insecure — operators MUST set this via the environment.
     SECRET_KEY: str = ""
 
+    # HMAC-SHA256 secret for identity-number hashing (data minimization).
+    # Security: must be a strong random string in production.
+    # An empty default means hashing works but is NOT collision-resistant —
+    # operators MUST set this via the environment before going to production.
+    ID_HMAC_SECRET: str = ""
+
+    # When True, uploaded file bytes are stored in MinIO object storage with
+    # AES-256 server-side encryption. The DB stores only a SHA-256 file hash
+    # and the object key — never the file bytes themselves.
+    PERSIST_UPLOADS: bool = False
+
+    # MinIO / S3-compatible object storage configuration.
+    # All four values are required when PERSIST_UPLOADS=True.
+    MINIO_ENDPOINT: str = ""
+    MINIO_ACCESS_KEY: str = ""
+    MINIO_SECRET_KEY: str = ""
+    MINIO_BUCKET: str = "yonko-uploads"
+
     # Comma-separated list of allowed CORS origins for the FastAPI CORS middleware.
     # Security: restrict this to actual frontend origins in production.
     CORS_ALLOW_ORIGINS: str = (

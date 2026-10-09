@@ -15,6 +15,7 @@ from app.detect.engine import detect_bundle
 from app.detect.types import BundleDetectionResult, DetectionError
 from app.models import Bundle, Document, FindingPg
 from app.ocr.types import OCRError
+from app.security.masking import hash_id, mask_id
 
 logger = logging.getLogger(__name__)
 
@@ -91,13 +92,18 @@ def _persist_bundle(result: BundleDetectionResult, temp_dir: Path) -> None:
     FindingPg row per finding to the configured database.
 
     Security: no file bytes, raw field values, or PII are stored here.
-    Only document types, field names, decisions, and severity are persisted.
+    Identity fields (id_number, account_number) are stored as masked last-4
+    and HMAC-SHA256 hash only — never as raw values. See Rule 2 of steering file.
 
     The session is opened and closed entirely inside this function so that the
     /analyze route signature stays unchanged (no db: Session = Depends(...)
     parameter). Using `next(get_db())` pulls one session from the generator and
     we close it explicitly in the finally block.
     """
+    # Identity fields whose raw values must be masked before persistence.
+    # Rule 2 of the steering file: never store full ID numbers.
+    IDENTITY_FIELDS = {"id_number", "account_number"}
+
     db = next(get_db())
     try:
         # Create Bundle row — bundle_ref is the temp-dir name for diagnostics only,
@@ -111,24 +117,90 @@ def _persist_bundle(result: BundleDetectionResult, temp_dir: Path) -> None:
         db.add(bundle)
         db.flush()  # obtain bundle.id without committing yet
 
-        # Derive unique document types from evidence across all findings.
-        # We create one Document row per distinct document_type rather than one
+        # --- First pass: collect doc types, filenames, and identity values ---
+        # We derive one Document row per distinct document_type rather than one
         # per uploaded file because the detection engine maps files → doc types.
         seen_doc_types: set[str] = set()
+        # doc_type -> filename (first source_path basename seen for that type)
+        filename_by_doc: dict[str, str] = {}
+        # doc_type -> full source_path (first seen — used for PERSIST_UPLOADS)
+        source_path_by_doc: dict[str, str] = {}
+        # doc_type -> (masked_value, id_hash) — only when an identity finding exists
+        identity_by_doc: dict[str, tuple[str, str]] = {}
+
         for finding in result.findings:
             for ev in finding.evidence:
                 doc_type = ev.document_type
-                if doc_type and doc_type not in seen_doc_types:
-                    seen_doc_types.add(doc_type)
-                    doc = Document(
-                        bundle_id=bundle.id,
-                        # filename here records the source_path basename for
-                        # traceability; no actual file bytes are stored.
-                        filename=Path(ev.source_path).name if ev.source_path else doc_type,
-                        document_type=doc_type,
-                        page_count=1,
-                    )
-                    db.add(doc)
+                if not doc_type:
+                    continue
+                seen_doc_types.add(doc_type)
+                # Record first-seen filename and source path for this doc_type
+                filename_by_doc.setdefault(
+                    doc_type,
+                    Path(ev.source_path).name if ev.source_path else doc_type,
+                )
+                if ev.source_path:
+                    source_path_by_doc.setdefault(doc_type, ev.source_path)
+                # Mask and hash identity field values — raw value is never stored.
+                if finding.field in IDENTITY_FIELDS and ev.raw_value:
+                    try:
+                        identity_by_doc[doc_type] = (
+                            mask_id(ev.raw_value),
+                            hash_id(ev.raw_value),
+                        )
+                    except ValueError:
+                        # raw_value shorter than 4 chars — skip masking safely
+                        logger.warning(
+                            "PERSIST: identity value too short to mask for "
+                            "doc_type=%s field=%s — skipping masking.",
+                            doc_type,
+                            finding.field,
+                        )
+
+        # --- Second pass: create Document rows ---
+        for doc_type in seen_doc_types:
+            masked, hashed = identity_by_doc.get(doc_type, (None, None))
+            doc = Document(
+                bundle_id=bundle.id,
+                # filename records the source_path basename for traceability only;
+                # no actual file bytes are stored in this table.
+                filename=filename_by_doc.get(doc_type, doc_type),
+                document_type=doc_type,
+                page_count=1,
+                masked_value=masked,   # last-4 of identity field, or None
+                id_hash=hashed,        # HMAC-SHA256 for cross-doc matching, or None
+            )
+
+            # PERSIST_UPLOADS: store file bytes in MinIO with AES-256 SSE.
+            # The DB stores only file_hash (SHA-256) and storage_key — no bytes.
+            if settings.PERSIST_UPLOADS:
+                from app.storage import sha256_hex, upload_file
+                src_path = source_path_by_doc.get(doc_type)
+                if src_path:
+                    try:
+                        file_bytes = Path(src_path).read_bytes()
+                        doc.file_hash = sha256_hex(file_bytes)
+                        doc.storage_key = upload_file(
+                            file_bytes,
+                            storage_key=f"uploads/{bundle.id}/{doc.id}/{Path(src_path).name}",
+                        )
+                    except (OSError, IOError):
+                        # File may not exist in test environments with fake paths.
+                        # Silently skip — never raise from persistence path.
+                        logger.warning(
+                            "PERSIST_UPLOADS: could not read file for upload "
+                            "(doc_type=%s, path=%s). Skipping.",
+                            doc_type,
+                            src_path,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "PERSIST_UPLOADS: upload_file failed for doc_type=%s. "
+                            "Skipping file upload — DB metadata will still be saved.",
+                            doc_type,
+                        )
+
+            db.add(doc)
 
         # Create one FindingPg row per finding.
         for finding in result.findings:
@@ -163,6 +235,7 @@ def api_info() -> dict[str, object]:
         "pdf_pages_rendered_as_images": True,
         "maximum_pdf_pages_per_file": MAX_PDF_PAGES,
         "synthetic_demo_data_only": True,
+        "notice": "SYNTHETIC DATA ONLY — this system processes synthetic documents. No real personal data.",
     }
 
 
