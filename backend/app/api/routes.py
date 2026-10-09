@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
+from app.config import settings
+from app.database import get_db
 from app.detect.engine import detect_bundle
-from app.detect.types import DetectionError
+from app.detect.types import BundleDetectionResult, DetectionError
+from app.models import Bundle, Document, FindingPg
 from app.ocr.types import OCRError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["analysis"])
 
@@ -69,6 +75,80 @@ def _render_pdfs(temp_dir: Path) -> None:
                 pdf_path.unlink(missing_ok=True)
             except OSError:  # pragma: no cover - locked temp file on Windows
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Persistence helper
+# ---------------------------------------------------------------------------
+
+# PERSIST_RESULTS: when True, bundle metadata and findings are saved to PostgreSQL.
+# Failure to persist does not affect the analysis response (fire-and-forget).
+# No file bytes or PII are stored — only document types, field names, and decisions.
+
+def _persist_bundle(result: BundleDetectionResult, temp_dir: Path) -> None:
+    """
+    Write a Bundle row, one Document row per unique document type, and one
+    FindingPg row per finding to the configured database.
+
+    Security: no file bytes, raw field values, or PII are stored here.
+    Only document types, field names, decisions, and severity are persisted.
+
+    The session is opened and closed entirely inside this function so that the
+    /analyze route signature stays unchanged (no db: Session = Depends(...)
+    parameter). Using `next(get_db())` pulls one session from the generator and
+    we close it explicitly in the finally block.
+    """
+    db = next(get_db())
+    try:
+        # Create Bundle row — bundle_ref is the temp-dir name for diagnostics only,
+        # not a reconstructable filesystem path after the temp dir is deleted.
+        bundle = Bundle(
+            # System-level bundles have no user owner; use a fixed sentinel email.
+            # In a multi-user flow this would be the authenticated user's email.
+            owner_email="system@yonko.internal",
+            bundle_ref=temp_dir.name,
+        )
+        db.add(bundle)
+        db.flush()  # obtain bundle.id without committing yet
+
+        # Derive unique document types from evidence across all findings.
+        # We create one Document row per distinct document_type rather than one
+        # per uploaded file because the detection engine maps files → doc types.
+        seen_doc_types: set[str] = set()
+        for finding in result.findings:
+            for ev in finding.evidence:
+                doc_type = ev.document_type
+                if doc_type and doc_type not in seen_doc_types:
+                    seen_doc_types.add(doc_type)
+                    doc = Document(
+                        bundle_id=bundle.id,
+                        # filename here records the source_path basename for
+                        # traceability; no actual file bytes are stored.
+                        filename=Path(ev.source_path).name if ev.source_path else doc_type,
+                        document_type=doc_type,
+                        page_count=1,
+                    )
+                    db.add(doc)
+
+        # Create one FindingPg row per finding.
+        for finding in result.findings:
+            finding_row = FindingPg(
+                bundle_id=bundle.id,
+                field=finding.field,
+                decision=finding.decision,
+                severity=finding.severity,
+                reason=finding.reason,
+                similarity=finding.similarity,
+                recommended_action=finding.recommended_action,
+            )
+            db.add(finding_row)
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 @router.get("/api/info")
@@ -141,6 +221,23 @@ async def analyze(files: list[UploadFile] = File(...)) -> dict[str, object]:
         _render_pdfs(temp_dir)
 
         result = detect_bundle(temp_dir)
+
+        # PERSIST_RESULTS: when True, bundle metadata and findings are saved to PostgreSQL.
+        # Failure to persist does not affect the analysis response (fire-and-forget).
+        # No file bytes or PII are stored — only document types, field names, and decisions.
+        if settings.PERSIST_RESULTS:
+            try:
+                _persist_bundle(result, temp_dir)
+            except Exception:
+                # A DB write failure must never surface as an HTTP error.
+                # Log the exception for operator visibility without exposing
+                # internal details (no PII, no tokens) in the response.
+                logger.exception(
+                    "PERSIST_RESULTS: failed to persist bundle results to DB "
+                    "(bundle_ref=%s). Analysis response is unaffected.",
+                    temp_dir.name,
+                )
+
         return result.model_dump()
     except HTTPException:
         raise

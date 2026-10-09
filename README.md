@@ -33,6 +33,29 @@ Run backend tests with:
 pytest -q --basetemp .pytest-tmp
 ```
 
+## Running with Docker
+
+**Prerequisites:** Docker Desktop must be running.
+
+```powershell
+# 1. Copy the example env file and fill in DATABASE_URL / secrets
+cp .env.example .env
+
+# 2. Build images and start services in the background
+docker compose up --build -d
+
+# 3. Apply database migrations (run once after first start, or after schema changes)
+docker compose exec api alembic upgrade head
+
+# 4. Stop and remove containers + volumes when done
+docker compose down -v
+```
+
+**Notes:**
+- The `db` service has no published host port — it is on an internal network only and is reachable solely by the `api` service.
+- `PERSIST_RESULTS` defaults to `false`. Set `PERSIST_RESULTS=true` in `.env` to save bundle metadata and findings to PostgreSQL after each analysis.
+- The API is available at `http://localhost:8000` on the host machine.
+
 ## Run the frontend
 
 From the repository root:

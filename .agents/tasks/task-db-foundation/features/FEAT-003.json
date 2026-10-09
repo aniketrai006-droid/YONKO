@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "PERSIST_RESULTS integration into /analyze route and README Docker section update. Depends on FEAT-001 (config) and FEAT-002 (models + database). Modifies backend/app/api/routes.py to optionally persist bundle/document/findings when PERSIST_RESULTS=true, and updates README.md with a 'Running with Docker' section.",
+  "status": "completed",
+  "steps": [
+    "Modify backend/app/api/routes.py to add PERSIST_RESULTS behavior. Import settings from app.config and get_db from app.database and the ORM models (Bundle, Document, FindingPg) from app.models. After `result = detect_bundle(temp_dir)` succeeds and before returning, add a conditional block: `if settings.PERSIST_RESULTS: _persist_bundle(result, temp_dir, db)`. Define _persist_bundle(result: BundleDetectionResult, temp_dir: Path, db: Session) as a module-level helper that: (a) creates a Bundle row with bundle_ref=str(temp_dir.name); (b) creates one Document row per entry in result using document_type from findings evidence (derive unique doc types from evidence); (c) creates one FindingPg row per finding in result.findings with all fields mapped. Wrap the persistence block in a try/except so that a DB write failure does NOT affect the HTTP response — log the error with logging.exception() but return the result regardless. CRITICAL: the /analyze route signature, response shape (BundleDetectionResult.model_dump()), and HTTP status codes must not change. The get_db session must be opened and closed inside _persist_bundle, not as a FastAPI Depends(), to avoid changing the route signature. Do NOT add db as a route parameter — that would change the endpoint signature and break the frontend. Use `next(get_db())` pattern with explicit close in a try/finally.",
+    "Add a comment block at the top of the persistence section: '# PERSIST_RESULTS: when True, bundle metadata and findings are saved to PostgreSQL. # Failure to persist does not affect the analysis response (fire-and-forget). # No file bytes or PII are stored — only document types, field names, and decisions.'",
+    "Create backend/tests/test_persist.py with tests: (a) test_persist_false_by_default — call POST /analyze with synthetic images via TestClient with PERSIST_RESULTS=False (default), assert response 200 and that no Bundle row exists in an in-memory SQLite DB; (b) test_persist_true_saves_bundle — monkeypatch settings.PERSIST_RESULTS = True and override DATABASE_URL to sqlite://, call POST /analyze, assert response 200 and a Bundle row was created; (c) test_persist_db_failure_does_not_break_analyze — monkeypatch _persist_bundle to raise an exception, assert POST /analyze still returns 200. Note: to make tests work without actual image files for the persist path, monkeypatch detect_bundle to return a fake BundleDetectionResult. Use the conftest.py autouse fixture (isolated_db) which already monkeypatches the SQLite path.",
+    "Update README.md: add a '## Running with Docker' section after the '## Run the backend' section. Include: (a) prerequisites (Docker Desktop); (b) `cp .env.example .env` and edit DATABASE_URL / secrets; (c) `docker compose up --build -d`; (d) `docker compose exec api alembic upgrade head` to apply migrations; (e) note that db service has no published host port (internal network only); (f) note that PERSIST_RESULTS=false by default, set to true in .env to enable persistence; (g) `docker compose down -v` to stop and remove volumes. Keep the section concise (under 20 lines)."
+  ],
+  "acceptance_criteria": [
+    "/analyze response shape is identical to before: bundle_path, documents_processed, findings, summary, warnings — verified by existing test_api.py tests",
+    "POST /analyze with PERSIST_RESULTS=False (default) returns 200 and does not write to the DB",
+    "POST /analyze with PERSIST_RESULTS=True saves a Bundle row without altering the response",
+    "A simulated DB failure in _persist_bundle does not cause /analyze to return non-200",
+    "README.md contains a 'Running with Docker' section with alembic upgrade head instructions",
+    "cd backend && pytest -q --basetemp .pytest-tmp passes all tests including new persist tests"
+  ],
+  "verification": [
+    "cd backend && pytest tests/test_persist.py -v --basetemp .pytest-tmp",
+    "cd backend && pytest -q --basetemp .pytest-tmp"
+  ],
+  "blocked_reason": null,
+  "findings": "All 3 persist tests pass. _persist_bundle helper added to routes.py using next(get_db()) pattern with explicit close in try/finally. PERSIST_RESULTS=False (default) skips all DB writes. PERSIST_RESULTS=True saves Bundle + Document (per unique doc_type from evidence) + FindingPg rows. DB failure is caught and logged; /analyze always returns 200. Route signature unchanged. README updated with 'Running with Docker' section. Total test count: 68 passed, 7 failed (all 7 are pre-existing Tesseract/OCR failures on Windows dev machine, unchanged from FEAT-002). StaticPool required for SQLite in-memory test isolation to share a single connection across the route helper and test assertions."
+}
