@@ -78,3 +78,32 @@ def test_cases_are_isolated_per_reviewer():
 
     leaked = client.get(f"/cases/{case_id}", headers=_auth_header(second["token"]))
     assert leaked.status_code == 404
+
+
+def test_brute_force_lockout_returns_429():
+    """Fire MAX_FAILED_ATTEMPTS wrong passwords; the next attempt must return 429."""
+    from app.security import MAX_FAILED_ATTEMPTS
+
+    email = "lockout.test@department.gov.in"
+    _signup(email, password="correct-password123")
+
+    # Submit wrong passwords up to the threshold; each must be ≥8 chars to pass
+    # the format-validation layer and actually reach the DB lockout counter.
+    for i in range(MAX_FAILED_ATTEMPTS):
+        resp = client.post(
+            "/auth/signin",
+            json={"email": email, "password": "wrongpassword123"},
+        )
+        # Each attempt before the account is locked returns 401
+        assert resp.status_code == 401, (
+            f"Expected 401 on attempt {i + 1}, got {resp.status_code}"
+        )
+
+    # The account is now locked — even a correct password must be rejected with 429
+    locked_resp = client.post(
+        "/auth/signin",
+        json={"email": email, "password": "correct-password123"},
+    )
+    assert locked_resp.status_code == 429, (
+        f"Expected 429 after {MAX_FAILED_ATTEMPTS} failed attempts, got {locked_resp.status_code}"
+    )

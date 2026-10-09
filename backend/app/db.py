@@ -60,7 +60,9 @@ def _init(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS audit_log (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             ts          TEXT    NOT NULL,
-            email       TEXT,
+            -- Security: actor_id is an opaque HMAC-SHA256 of the email (hex, first 16 chars).
+            -- Never store raw email or other PII here. See docs/SECURITY.md.
+            actor_id    TEXT,
             action      TEXT    NOT NULL,
             detail      TEXT,
             ip          TEXT
@@ -69,7 +71,7 @@ def _init(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_sessions_email ON sessions(email);
         CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
         CREATE INDEX IF NOT EXISTS idx_cases_owner ON cases(owner_email);
-        CREATE INDEX IF NOT EXISTS idx_audit_email ON audit_log(email);
+        CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id);
         CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
         """
     )
@@ -86,20 +88,46 @@ def get_connection():
         _secure_db_file(path)
         yield connection
         connection.commit()
-    except Exception:
-        connection.rollback()
+    except Exception as exc:
+        # Security: HTTPException is an intentional application response (e.g. 401,
+        # 429 from the lockout path).  Commit any pending writes (like the
+        # failed_attempts counter increment) before re-raising so that security
+        # counters are not silently discarded.  All other exceptions roll back.
+        from fastapi import HTTPException
+        if isinstance(exc, HTTPException):
+            connection.commit()
+        else:
+            connection.rollback()
         raise
     finally:
         connection.close()
 
 
+def _opaque_actor_id(email: str | None) -> str | None:
+    """Return a short HMAC-SHA256 of email so audit rows are linkable but not PII.
+
+    Security: raw email is never written to audit_log.  The hex digest prefix
+    is long enough for linkability within the system but not a reversible lookup.
+    """
+    if not email:
+        return None
+    import hashlib, hmac as _hmac
+    digest = _hmac.new(b"audit-actor", email.lower().encode(), hashlib.sha256).hexdigest()
+    return digest[:16]  # 64-bit prefix — sufficient for linkability, not a full hash
+
+
 def audit(connection: sqlite3.Connection, email: str | None, action: str,
           detail: str = "", ip: str = "") -> None:
-    """Insert a row into audit_log. Call inside an open get_connection() block."""
+    """Insert a row into audit_log. Call inside an open get_connection() block.
+
+    Security: email is converted to an opaque actor_id before storage so that
+    no PII is written to the audit log.  See docs/SECURITY.md.
+    """
     from app.security import utc_now  # avoid circular import at module load
+    actor_id = _opaque_actor_id(email)
     connection.execute(
-        "INSERT INTO audit_log (ts, email, action, detail, ip) VALUES (?, ?, ?, ?, ?)",
-        (utc_now(), email, action, detail, ip),
+        "INSERT INTO audit_log (ts, actor_id, action, detail, ip) VALUES (?, ?, ?, ?, ?)",
+        (utc_now(), actor_id, action, detail, ip),
     )
 
 

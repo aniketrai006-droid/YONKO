@@ -32,6 +32,9 @@ Thumbs.db
 *.sqlite3
 backend/data/samanvay.sqlite
 
+# AES dev key — auto-generated on first run; must never be committed
+backend/data/.encryption_key
+
 # Generated runtime output
 uvicorn.log
 ocr_results/
