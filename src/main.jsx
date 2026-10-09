@@ -423,6 +423,7 @@ function AccountModal({
   const [mode, setMode] = useState(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [totpCode, setTotpCode] = useState('');
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
 
@@ -454,10 +455,11 @@ function AccountModal({
       const account =
         mode === 'signup'
           ? await signUpReviewer({ email, password })
-          : await signInReviewer({ email, password });
+          : await signInReviewer({ email, password, totpCode });
 
-      // Sign up always asks; sign in asks only when basic info is missing.
-      if (mode === 'signup' || account.needsProfile) {
+      // Only prompt for the profile step when the server asks for it
+      // (legacy accounts). JWT accounts skip it entirely.
+      if (account.needsProfile) {
         setPendingAccount(account);
         setAwaitingAuth(true);
         setMode('profile');
@@ -571,13 +573,27 @@ function AccountModal({
                 Password
                 <input
                   type="password"
-                  minLength="8"
+                  minLength="12"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  placeholder="At least 8 characters"
+                  placeholder="At least 12 characters"
                   required
                 />
               </label>
+              {mode === 'signin' && (
+                <label>
+                  MFA code <span className="mfa-optional">(reviewers & admins)</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength="6"
+                    value={totpCode}
+                    onChange={(event) => setTotpCode(event.target.value)}
+                    placeholder="6-digit code from your authenticator app"
+                  />
+                </label>
+              )}
             </>
           )}
 

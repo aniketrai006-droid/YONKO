@@ -1,32 +1,36 @@
-const SESSION_KEY = 'yonko_reviewer_session';
+// In-memory session store.
+//
+// Security: tokens are NEVER written to localStorage/sessionStorage — a
+// script-injection bug or shared device must not be able to read them from
+// persistent storage. The trade-off is deliberate: a page reload signs the
+// user out and they log in again (the backend access token is only valid
+// for 15 minutes anyway).
+//
+// Account shape kept compatible with the dashboard components:
+//   { email, token, refreshToken, role, mfaEnrolled, needsProfile }
+
+let session = null;
+
+// One-time cleanup: remove any session the previous localStorage-based
+// implementation may have left behind.
+try {
+  localStorage.removeItem('yonko_reviewer_session');
+} catch {
+  // Storage can be unavailable in private mode.
+}
 
 export function getSession() {
-  try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    const parsed = raw ? JSON.parse(raw) : null;
-    return parsed && parsed.email && parsed.token ? parsed : null;
-  } catch {
-    return null;
-  }
+  return session;
 }
 
 export function setSession(account) {
-  try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(account));
-  } catch {
-    // Storage can be unavailable in private mode.
-  }
+  session = account || null;
 }
 
 export function clearSession() {
-  try {
-    localStorage.removeItem(SESSION_KEY);
-  } catch {
-    // Ignore storage delete errors.
-  }
+  session = null;
 }
 
 export function authHeaders() {
-  const session = getSession();
   return session?.token ? { Authorization: `Bearer ${session.token}` } : {};
 }

@@ -157,6 +157,24 @@ def test_persist_uploads_false_no_minio_call(monkeypatch):
     monkeypatch.setattr(db_module, "SessionLocal", TestSession)
     monkeypatch.setattr(routes_module, "get_db", _test_get_db)
 
+    # /analyze is auth-protected: create a synthetic citizen and mint a token.
+    import uuid as _uuid
+    from app.auth.tokens import create_access_token
+    from app.models import UserPg
+    session = TestSession()
+    try:
+        user = UserPg(
+            email=f"masking-{_uuid.uuid4().hex[:8]}@synthetic.example.com",
+            password_hash="not-a-real-hash",
+            role="citizen",
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        token, _ = create_access_token(user.id, "citizen", mfa_ok=True)
+    finally:
+        session.close()
+
     # Synthetic result that includes an identity field — this ensures the
     # PERSIST_UPLOADS code path inside _persist_bundle is exercised.
     fake_result = BundleDetectionResult(
@@ -202,7 +220,10 @@ def test_persist_uploads_false_no_minio_call(monkeypatch):
     # neither the lazy import nor any pre-imported reference can slip through.
     with patch("app.storage.get_storage_client", mock_get_client):
         client = TestClient(app)
-        response = client.post("/analyze", files=files)
+        response = client.post(
+            "/analyze", files=files,
+            headers={"Authorization": f"Bearer {token}"},
+        )
 
     assert response.status_code == 200, (
         f"Expected 200 but got {response.status_code}: {response.text}"

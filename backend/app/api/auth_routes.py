@@ -84,6 +84,13 @@ def _client_ip(request: Request | None) -> str:
 
 
 def get_current_user(authorization: str | None = Header(default=None)):
+    """Resolve the caller from a Bearer token.
+
+    Accepts either a JWT access token (new auth system) or a legacy SQLite
+    session token. JWTs are tried first so the migrated frontend keeps
+    working against the per-reviewer /cases endpoints without a second
+    login. Returns the same dict shape as before: {email, name, dob, token}.
+    """
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -95,6 +102,41 @@ def get_current_user(authorization: str | None = Header(default=None)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Sign in required.",
         )
+
+    # --- New path: JWT access token -------------------------------------
+    from app.auth.tokens import decode_access_token
+
+    jwt_payload = decode_access_token(token)
+    if jwt_payload is not None:
+        try:
+            import uuid as _uuid
+            from sqlalchemy import select
+            from app.database import SessionLocal
+            from app.models import UserPg
+
+            user_id = _uuid.UUID(jwt_payload["sub"])
+            with SessionLocal() as session:
+                row = session.execute(
+                    select(UserPg).where(UserPg.id == user_id)
+                ).scalar_one_or_none()
+            if row is None or not row.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Sign in required.",
+                )
+            return {
+                "email": row.email,
+                "name": "",
+                "dob": "",
+                "token": token,
+            }
+        except HTTPException:
+            raise
+        except Exception:
+            # Fall through to the legacy session lookup.
+            pass
+
+    # --- Legacy path: SQLite session token ------------------------------
     with get_connection() as connection:
         row = connection.execute(
             """

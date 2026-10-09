@@ -7,13 +7,14 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import Depends, APIRouter, File, HTTPException, UploadFile, status
 
+from app.auth.deps import get_current_user
 from app.config import settings
 from app.database import get_db
 from app.detect.engine import detect_bundle
 from app.detect.types import BundleDetectionResult, DetectionError
-from app.models import Bundle, Document, FindingPg
+from app.models import Bundle, Document, FindingPg, UserPg
 from app.ocr.types import OCRError
 from app.security.masking import hash_id, mask_id
 
@@ -86,7 +87,9 @@ def _render_pdfs(temp_dir: Path) -> None:
 # Failure to persist does not affect the analysis response (fire-and-forget).
 # No file bytes or PII are stored — only document types, field names, and decisions.
 
-def _persist_bundle(result: BundleDetectionResult, temp_dir: Path) -> None:
+def _persist_bundle(
+    result: BundleDetectionResult, temp_dir: Path, owner_email: str
+) -> None:
     """
     Write a Bundle row, one Document row per unique document type, and one
     FindingPg row per finding to the configured database.
@@ -94,6 +97,10 @@ def _persist_bundle(result: BundleDetectionResult, temp_dir: Path) -> None:
     Security: no file bytes, raw field values, or PII are stored here.
     Identity fields (id_number, account_number) are stored as masked last-4
     and HMAC-SHA256 hash only — never as raw values. See Rule 2 of steering file.
+
+    owner_email is the authenticated caller's email (the route dependency
+    guarantees a valid user); the bundles.owner_email FK therefore always
+    references a real users_pg row.
 
     The session is opened and closed entirely inside this function so that the
     /analyze route signature stays unchanged (no db: Session = Depends(...)
@@ -109,9 +116,9 @@ def _persist_bundle(result: BundleDetectionResult, temp_dir: Path) -> None:
         # Create Bundle row — bundle_ref is the temp-dir name for diagnostics only,
         # not a reconstructable filesystem path after the temp dir is deleted.
         bundle = Bundle(
-            # System-level bundles have no user owner; use a fixed sentinel email.
-            # In a multi-user flow this would be the authenticated user's email.
-            owner_email="system@yonko.internal",
+            # Authenticated caller (guaranteed by the /analyze dependency);
+            # satisfies the bundles.owner_email FK with a real users_pg row.
+            owner_email=owner_email,
             bundle_ref=temp_dir.name,
         )
         db.add(bundle)
@@ -240,8 +247,16 @@ def api_info() -> dict[str, object]:
 
 
 @router.post("/analyze")
-async def analyze(files: list[UploadFile] = File(...)) -> dict[str, object]:
-    """Analyze 2--10 images or PDFs in a request-scoped temporary directory."""
+async def analyze(
+    files: list[UploadFile] = File(...),
+    user: UserPg = Depends(get_current_user),
+) -> dict[str, object]:
+    """Analyze 2--10 images or PDFs in a request-scoped temporary directory.
+
+    Auth: any authenticated role (citizen, reviewer, admin) may analyze
+    documents — citizens use it for pre-checks, reviewers for case work.
+    Unauthenticated requests are rejected with 401 before any file is read.
+    """
     if not MIN_FILES <= len(files) <= MAX_FILES:
         raise _bad_request(
             f"Upload between {MIN_FILES} and {MAX_FILES} files.")
@@ -300,7 +315,7 @@ async def analyze(files: list[UploadFile] = File(...)) -> dict[str, object]:
         # No file bytes or PII are stored — only document types, field names, and decisions.
         if settings.PERSIST_RESULTS:
             try:
-                _persist_bundle(result, temp_dir)
+                _persist_bundle(result, temp_dir, owner_email=user.email)
             except Exception:
                 # A DB write failure must never surface as an HTTP error.
                 # Log the exception for operator visibility without exposing

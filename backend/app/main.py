@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.auth_jwt_routes import router as auth_jwt_router
 from app.api.auth_routes import router as auth_router
 from app.api.case_routes import router as case_router
+from app.api.review_routes import router as review_router
 from app.api.routes import router as api_router
 from app.config import settings
 
@@ -62,6 +63,7 @@ app.add_middleware(
 # removed once the frontend switches to JWT endpoints.
 app.include_router(auth_jwt_router)
 app.include_router(api_router)
+app.include_router(review_router)
 app.include_router(auth_router)
 app.include_router(case_router)
 

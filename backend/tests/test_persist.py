@@ -141,6 +141,34 @@ def _upload_files():
     ]
 
 
+def _auth_headers():
+    """Create a synthetic citizen in the patched DB and return auth headers.
+
+    POST /analyze is auth-protected; persist tests need a valid token whose
+    user also satisfies the bundles.owner_email FK when persistence is on.
+    """
+    import uuid as _uuid
+
+    from app.auth.tokens import create_access_token
+    from app.database import SessionLocal
+    from app.models import UserPg
+
+    session = SessionLocal()
+    try:
+        user = UserPg(
+            email=f"persist-{_uuid.uuid4().hex[:8]}@synthetic.example.com",
+            password_hash="not-a-real-hash",
+            role="citizen",
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        token, _ = create_access_token(user.id, "citizen", mfa_ok=True)
+        return {"Authorization": f"Bearer {token}"}
+    finally:
+        session.close()
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -159,7 +187,9 @@ def test_persist_false_does_not_write_db(monkeypatch, override_db):
     monkeypatch.setattr(config_module.settings, "PERSIST_RESULTS", False)
 
     client = TestClient(app)
-    response = client.post("/analyze", files=_upload_files())
+    response = client.post(
+        "/analyze", files=_upload_files(), headers=_auth_headers()
+    )
 
     assert response.status_code == 200, response.text
     body = response.json()
@@ -184,7 +214,9 @@ def test_persist_true_saves_bundle(monkeypatch, override_db):
     monkeypatch.setattr(config_module.settings, "PERSIST_RESULTS", True)
 
     client = TestClient(app)
-    response = client.post("/analyze", files=_upload_files())
+    response = client.post(
+        "/analyze", files=_upload_files(), headers=_auth_headers()
+    )
 
     assert response.status_code == 200, response.text
 
@@ -221,13 +253,15 @@ def test_persist_failure_does_not_break_analyze(monkeypatch, override_db):
     monkeypatch.setattr(config_module.settings, "PERSIST_RESULTS", True)
 
     # Simulate a DB failure by making _persist_bundle raise unconditionally
-    def _broken_persist(result, temp_dir):
+    def _broken_persist(result, temp_dir, owner_email=None):
         raise RuntimeError("Simulated database write failure")
 
     monkeypatch.setattr(routes_module, "_persist_bundle", _broken_persist)
 
     client = TestClient(app)
-    response = client.post("/analyze", files=_upload_files())
+    response = client.post(
+        "/analyze", files=_upload_files(), headers=_auth_headers()
+    )
 
     # The route must return 200 despite the persist failure
     assert response.status_code == 200, (

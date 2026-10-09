@@ -52,8 +52,13 @@ class UserPg(Base):
     locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Relationships
+    # Two FKs point at users_pg (owner_email and assigned_reviewer_id), so
+    # the join must be pinned to owner_email explicitly.
     bundles: Mapped[list["Bundle"]] = relationship(
-        "Bundle", back_populates="owner", cascade="all, delete-orphan"
+        "Bundle",
+        back_populates="owner",
+        cascade="all, delete-orphan",
+        primaryjoin="UserPg.email == foreign(Bundle.owner_email)",
     )
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
@@ -83,9 +88,20 @@ class Bundle(Base):
     )
     # Temp dir name for diagnostics only — no filesystem reconstruction possible
     bundle_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    # Reviewer assigned to this bundle. NULL = unassigned; only this reviewer
+    # (or an admin) may record decisions on the bundle's findings.
+    assigned_reviewer_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users_pg.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Relationships
-    owner: Mapped["UserPg"] = relationship("UserPg", back_populates="bundles")
+    # Pinned to owner_email because assigned_reviewer_id is a second FK to
+    # users_pg (see UserPg.bundles). foreign() marks the Bundle side.
+    owner: Mapped["UserPg"] = relationship(
+        "UserPg",
+        back_populates="bundles",
+        primaryjoin="foreign(Bundle.owner_email) == UserPg.email",
+    )
     documents: Mapped[list["Document"]] = relationship(
         "Document", back_populates="bundle", cascade="all, delete-orphan"
     )
@@ -172,6 +188,11 @@ class ReviewDecision(Base):
     finding_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("findings_pg.id", ondelete="CASCADE"), nullable=False
     )
+    # Opaque reviewer UUID (users_pg.id) — the authoritative attribution.
+    reviewer_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users_pg.id", ondelete="SET NULL"), nullable=True
+    )
+    # Kept for display/back-compat with the case dashboard.
     reviewer_email: Mapped[str] = mapped_column(String(255), nullable=False)
     decision: Mapped[str] = mapped_column(String(50), nullable=False)
     decided_at: Mapped[datetime] = mapped_column(

@@ -117,3 +117,41 @@ Auth events (REGISTER, LOGIN_OK, LOGIN_FAILED, LOGIN_FAILED_MFA,
 LOGIN_BLOCKED_LOCKED, REFRESH_OK, REFRESH_REUSE_DETECTED, LOGOUT,
 MFA_ENROLL) are written to `audit_log_pg` with the opaque user UUID as
 `actor_id` — never emails, passwords, or tokens (Rule 7).
+
+## Review Decisions and Protected Endpoints
+
+### POST /analyze
+
+`POST /analyze` requires a valid JWT access token (any role: citizen,
+reviewer, admin). Unauthenticated requests are rejected with **401** before
+any file is read or any OCR work happens. When `PERSIST_RESULTS=true`, the
+`bundles.owner_email` row records the *authenticated* caller's email (no
+more `system@yonko.internal` sentinel), satisfying the FK with a real
+`users_pg` row.
+
+### PATCH /findings/{id} (reviewer decisions)
+
+- Restricted to `reviewer` and `admin` roles via `require_role` (401
+  unauthenticated, 403 for citizens).
+- **Assignment enforcement:** a reviewer may only decide on findings whose
+  bundle has `assigned_reviewer_id` equal to their own user id — deciding on
+  someone else's case returns 403. Admins bypass the assignment check.
+- The request body is validated by Pydantic (`Literal["accepted",
+  "dismissed"]`); any other status is a 422 without touching the database.
+- Each decision is an append-only row in `review_decisions` recording the
+  opaque reviewer UUID (`reviewer_id`), a denormalized email for display,
+  and a **server-side** timestamp (`decided_at`) — the client cannot supply
+  the attribution or the time.
+
+### PATCH /bundles/{id}/assign (admin only)
+
+Assignment is an admin-only operation (403 for reviewers and citizens) so
+reviewers cannot reassign work to themselves. The target must be an active
+`reviewer` or `admin` account (400 otherwise).
+
+### Frontend token handling
+
+The React app keeps the JWT access and refresh tokens **in memory only**
+(`src/api/session.js` module state). Nothing is written to `localStorage`
+or `sessionStorage`; a page reload deliberately signs the user out. Any
+legacy `yonko_reviewer_session` entry in localStorage is removed at startup.
