@@ -15,6 +15,7 @@ env/
 .env
 .env.*
 !.env.example
+!.env.production
 
 # Node / frontend
 node_modules/
