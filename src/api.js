@@ -18,12 +18,21 @@ async function readError(response) {
 }
 
 export async function analyzeFiles(files) {
+  const session = getSession();
+  if (!session?.token) {
+    throw new Error('Sign in required. Analysis runs are tied to your reviewer account.');
+  }
+
   const formData = new FormData();
   Array.from(files).forEach((file) => formData.append('files', file));
 
   let response;
   try {
-    response = await fetch(`${API_BASE_URL}/analyze`, { method: 'POST', body: formData });
+    response = await fetch(`${API_BASE_URL}/analyze`, {
+      method: 'POST',
+      headers: { ...authHeaders() },
+      body: formData,
+    });
   } catch (error) {
     throw new Error(`Could not reach the analysis service at ${API_BASE_URL}. ${error.message}`);
   }
@@ -36,15 +45,22 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 function validateCredentials({ email, password }) {
   const normalized = String(email || '').trim().toLowerCase();
+  const plain = String(password || '');
 
   if (!EMAIL_PATTERN.test(normalized)) {
     throw new Error('Enter a valid official email address, for example reviewer@department.gov.in.');
   }
-  if (String(password || '').length < 8) {
+  if (plain.length < 8) {
     throw new Error('Password must be at least 8 characters long.');
   }
+  if (!/[A-Za-z]/.test(plain)) {
+    throw new Error('Password must include at least one letter.');
+  }
+  if (!/[0-9]/.test(plain)) {
+    throw new Error('Password must include at least one digit.');
+  }
 
-  return { email: normalized, password: String(password) };
+  return { email: normalized, password: plain };
 }
 
 async function postAuth(path, payload, withAuth = false) {

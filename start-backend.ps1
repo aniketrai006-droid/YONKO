@@ -39,6 +39,23 @@ function Read-EnvFile([string]$Path) {
 $envPath = Join-Path $root '.env'
 $vars = Read-EnvFile $envPath
 
+# Apply .env to this process (without overriding variables already set).
+foreach ($key in $vars.Keys) {
+    if (-not (Test-Path "env:$key")) {
+        Set-Item -Path "env:$key" -Value $vars[$key]
+    }
+}
+
+# Sessions are only durable across restarts when a stable secret exists.
+if (-not $env:YONKO_SESSION_SECRET) {
+    $bytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    $secret = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+','-').Replace('/','_')
+    Add-Content -Path $envPath -Value "YONKO_SESSION_SECRET=$secret"
+    $env:YONKO_SESSION_SECRET = $secret
+    Write-Host 'Generated YONKO_SESSION_SECRET and appended it to .env' -ForegroundColor Yellow
+}
+
 # --- Python interpreter -------------------------------------------------
 $python = Join-Path $root '.venv\Scripts\python.exe'
 if (-not (Test-Path $python)) {

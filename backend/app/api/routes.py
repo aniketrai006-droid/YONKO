@@ -1,4 +1,16 @@
-"""HTTP routes for temporary, privacy-preserving document analysis."""
+"""HTTP routes for temporary, privacy-preserving document analysis.
+
+Hardened for untrusted input:
+
+- ``/analyze`` requires a signed-in reviewer (no anonymous OCR jobs) and is
+  rate limited per account.
+- Uploads are capped per file (MAX_UPLOAD_BYTES) while streaming, so a huge
+  body is rejected before it is buffered.
+- The declared extension must match the file's magic bytes, defeating
+  content-spoofing (for example a script renamed to ``.png``).
+- Files are written under generated names in a private temp directory;
+  client paths are never trusted, and everything is deleted afterwards.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +18,16 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import (APIRouter, Depends, File, HTTPException, Request,
+                     UploadFile, status)
 
+from app.api.auth_routes import get_current_user
+from app.db import record_audit
 from app.detect.engine import detect_bundle
 from app.detect.types import DetectionError
 from app.ocr.types import OCRError
+from app.ratelimit import (analyze_rate_limit_per_minute, get_client_ip,
+                           limiter)
 
 router = APIRouter(tags=["analysis"])
 
@@ -21,6 +38,14 @@ PDF_SUFFIX = ".pdf"
 ALLOWED_SUFFIXES = IMAGE_SUFFIXES | {PDF_SUFFIX}
 MAX_PDF_PAGES = 10
 PDF_RENDER_ZOOM = 2.0
+MAX_UPLOAD_BYTES = 16 * 1024 * 1024  # 16 MB per file
+
+_MAGIC_PREFIXES = {
+    ".png": (b"\x89PNG\r\n\x1a\n",),
+    ".jpg": (b"\xff\xd8\xff",),
+    ".jpeg": (b"\xff\xd8\xff",),
+    ".pdf": (b"%PDF-",),
+}
 
 
 def _bad_request(detail: str) -> HTTPException:
@@ -82,13 +107,60 @@ def api_info() -> dict[str, object]:
         "image_only": False,
         "pdf_pages_rendered_as_images": True,
         "maximum_pdf_pages_per_file": MAX_PDF_PAGES,
+        "maximum_upload_bytes": MAX_UPLOAD_BYTES,
         "synthetic_demo_data_only": True,
     }
 
 
+def _matches_magic(suffix: str, head: bytes) -> bool:
+    expected = _MAGIC_PREFIXES.get(suffix)
+    if not expected:
+        return False
+    return any(head.startswith(prefix) for prefix in expected)
+
+
+async def _read_capped(upload: UploadFile, suffix: str) -> bytes:
+    """Stream one upload with a hard size cap and magic-byte validation."""
+    buffer = bytearray()
+    while len(buffer) <= MAX_UPLOAD_BYTES:
+        chunk = await upload.read(min(1024 * 1024, MAX_UPLOAD_BYTES + 1 - len(buffer)))
+        if not chunk:
+            break
+        buffer.extend(chunk)
+    if len(buffer) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Uploaded file '{upload.filename}' exceeds the "
+                   f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.",
+        )
+    if not buffer:
+        raise _bad_request(f"Uploaded file '{upload.filename}' is empty.")
+    if not _matches_magic(suffix, bytes(buffer[:16])):
+        raise _bad_request(
+            f"Uploaded file '{upload.filename}' does not match its file type. "
+            "Only genuine PNG, JPG, JPEG, and PDF files are accepted.")
+    return bytes(buffer)
+
+
 @router.post("/analyze")
-async def analyze(files: list[UploadFile] = File(...)) -> dict[str, object]:
-    """Analyze 2--10 images or PDFs in a request-scoped temporary directory."""
+async def analyze(
+    request: Request,
+    files: list[UploadFile] = File(...),
+    user: dict = Depends(get_current_user),
+) -> dict[str, object]:
+    """Analyze 2--10 images or PDFs in a request-scoped temporary directory.
+
+    Requires a signed-in reviewer; every run is recorded in the audit log.
+    """
+    allowed, retry_after = limiter.check(
+        f"analyze:{user['email']}", analyze_rate_limit_per_minute(), 60)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Analysis rate limit reached. Please wait a minute.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     if not MIN_FILES <= len(files) <= MAX_FILES:
         raise _bad_request(
             f"Upload between {MIN_FILES} and {MAX_FILES} files.")
@@ -120,9 +192,7 @@ async def analyze(files: list[UploadFile] = File(...)) -> dict[str, object]:
             # ordering deterministic while retaining the genuine extension.
             suffix = Path(upload.filename or "").suffix.lower()
             destination = temp_dir / f"upload_{index:02d}{suffix}"
-            contents = await upload.read()
-            if not contents:
-                raise _bad_request(f"Uploaded file '{upload.filename}' is empty.")
+            contents = await _read_capped(upload, suffix)
             destination.write_bytes(contents)
 
         # The detector works from PNGs. Convert JPEG uploads and PDF pages in
@@ -141,6 +211,12 @@ async def analyze(files: list[UploadFile] = File(...)) -> dict[str, object]:
         _render_pdfs(temp_dir)
 
         result = detect_bundle(temp_dir)
+        record_audit(
+            "analyze.completed",
+            email=user["email"],
+            ip=get_client_ip(request),
+            detail=f"documents={len(files)}",
+        )
         return result.model_dump()
     except HTTPException:
         raise

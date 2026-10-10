@@ -6,7 +6,7 @@ All repository documents are synthetic specimens. Do not add real identities or 
 
 ## Run the backend
 
-The easiest way on Windows is the bundled script. It creates `.venv` if it is missing, installs `backend/requirements.txt`, puts Tesseract on `PATH`, reads the environment from the root `.env` file, refuses to start if the port is already taken, and then runs uvicorn:
+The easiest way on Windows is the bundled script. It creates `.venv` if it is missing, installs `backend/requirements.txt`, puts Tesseract on `PATH`, reads the environment from the root `.env` file, generates `YONKO_SESSION_SECRET` if missing, refuses to start if the port is already taken, and then runs uvicorn:
 
 ```powershell
 .\start-backend.ps1            # add -Reload for auto-reload, -Port to change the port
@@ -25,13 +25,64 @@ The API is available at `http://127.0.0.1:8000`:
 - `GET /health`
 - `GET /health/ocr`
 - `GET /api/info`
-- `POST /analyze`
+- `POST /auth/signup`, `POST /auth/signin`, `POST /auth/profile`, `POST /auth/logout`
+- `GET|POST /cases`, `GET /cases/{id}`, `PATCH /cases/{id}/*`, `POST /cases/{id}/analysis`
+- `POST /analyze` — **requires a signed-in reviewer**
 
 Run backend tests with:
 
 ```powershell
-pytest -q --basetemp .pytest-tmp
+cd backend
+$env:PATH = "C:\Program Files\Tesseract-OCR;$env:PATH"
+..\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest-tmp
 ```
+
+## Security
+
+The backend ships with production-grade controls; see [docs/SECURITY.md](docs/SECURITY.md)
+for the full model. Highlights:
+
+- PBKDF2 (600k iterations) password hashing, hashed+expiring session tokens
+- Brute-force lockout, per-IP rate limiting, anti-enumeration sign-in
+- Magic-byte upload validation, 16 MB/file cap, path-traversal-safe temp files
+- Parameterised SQL everywhere, per-reviewer data isolation, audit log
+- Security headers, strict CORS allow-list, non-root Docker user
+
+Two ways to prove it (for judges):
+
+```powershell
+# 1. Automated attack suite (24 tests)
+cd backend; ..\.venv\Scripts\python.exe -m pytest tests/test_security.py -v
+
+# 2. Live attack demo against the running server
+.\security-demo.ps1
+```
+
+## Deployment
+
+### Backend on Render
+
+`render.yaml` defines the full stack: a Docker web service plus a managed
+PostgreSQL database. Deploy from the Render dashboard ("New → Blueprint")
+and point it at this repository. Render will:
+
+- build `backend/Dockerfile` (Python 3.11 + Tesseract),
+- create the Postgres database and wire `DATABASE_URL` automatically,
+- generate a random `YONKO_SESSION_SECRET`.
+
+You will be asked for one value: **`CORS_ALLOW_ORIGINS`** — set it to your
+Vercel URL, e.g. `https://your-app.vercel.app`.
+
+### Frontend on Vercel
+
+1. Import the repository in Vercel (framework preset: **Vite**).
+2. Set the environment variable **`VITE_API_BASE_URL`** to your Render URL,
+   e.g. `https://yonko-api.onrender.com`.
+3. Deploy. `vercel.json` adds the SPA rewrite plus security headers
+   (CSP, HSTS, nosniff, frame-deny).
+
+After both are live, update `CORS_ALLOW_ORIGINS` on Render to include the
+final Vercel domain.
 
 ## Run the frontend
 

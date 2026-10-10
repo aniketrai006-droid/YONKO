@@ -14,6 +14,16 @@ client = TestClient(app)
 ROOT = "data/synthetic/bundle_0001"
 
 
+def _auth_headers():
+    import uuid
+
+    email = f"reviewer-{uuid.uuid4().hex[:10]}@department.gov.in"
+    response = client.post(
+        "/auth/signup", json={"email": email, "password": "password123"})
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['token']}"}
+
+
 def _pdf_bytes(*image_names: str) -> bytes:
     """Wrap synthetic PNGs as one PDF page each."""
     document = pymupdf.open()
@@ -43,6 +53,7 @@ def test_analyze_accepts_a_pdf_beside_an_image():
     with _open_image("address_proof.png") as image:
         response = client.post(
             "/analyze",
+            headers=_auth_headers(),
             files=[("files", ("id_card.pdf", _pdf_bytes("id_card.png"),
                               "application/pdf")),
                    ("files", ("address_proof.png", image, "image/png"))])
@@ -55,6 +66,7 @@ def test_analyze_renders_every_page_of_a_pdf():
     with _open_image("address_proof.png") as image:
         response = client.post(
             "/analyze",
+            headers=_auth_headers(),
             files=[("files", ("bundle.pdf", pdf, "application/pdf")),
                    ("files", ("address_proof.png", image, "image/png"))])
     assert response.status_code == 200, response.text
@@ -65,6 +77,7 @@ def test_analyze_rejects_unreadable_pdf():
     with _open_image("address_proof.png") as image:
         response = client.post(
             "/analyze",
+            headers=_auth_headers(),
             files=[("files", ("broken.pdf", b"%PDF-1.7 broken", "application/pdf")),
                    ("files", ("address_proof.png", image, "image/png"))])
     assert response.status_code == 400
@@ -76,6 +89,7 @@ def test_analyze_rejects_pdf_above_the_page_limit():
     with _open_image("address_proof.png") as image:
         response = client.post(
             "/analyze",
+            headers=_auth_headers(),
             files=[("files", ("oversized.pdf", oversized, "application/pdf")),
                    ("files", ("address_proof.png", image, "image/png"))])
     assert response.status_code == 400
@@ -86,6 +100,7 @@ def test_analyze_rejects_pdf_content_declared_as_something_else():
     with _open_image("address_proof.png") as image:
         response = client.post(
             "/analyze",
+            headers=_auth_headers(),
             files=[("files", ("id_card.pdf", _pdf_bytes("id_card.png"),
                               "text/plain")),
                    ("files", ("address_proof.png", image, "image/png"))])

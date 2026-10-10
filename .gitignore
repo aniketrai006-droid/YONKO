@@ -34,6 +34,9 @@ backend/data/samanvay.sqlite
 
 # Generated runtime output
 uvicorn.log
+*-run.log
+*-run.err.log
+pytest-final.log
 ocr_results/
 extraction_results/
 normalization_results/

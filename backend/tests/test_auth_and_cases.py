@@ -24,7 +24,9 @@ def test_signin_without_signup_is_rejected():
         json={"email": "new.reviewer@department.gov.in", "password": "password123"},
     )
     assert response.status_code == 401
-    assert "sign up" in response.json()["detail"].lower()
+    # Anti-enumeration: the same generic error whether the account exists
+    # or the password is wrong.
+    assert response.json()["detail"] == "Incorrect email or password."
 
 
 def test_signup_stores_account_and_wrong_password_fails():
@@ -35,7 +37,7 @@ def test_signup_stores_account_and_wrong_password_fails():
 
     wrong = client.post(
         "/auth/signin",
-        json={"email": "officer@department.gov.in", "password": "wrongpass"},
+        json={"email": "officer@department.gov.in", "password": "wrongpass9"},
     )
     assert wrong.status_code == 401
     assert "incorrect" in wrong.json()["detail"].lower()
