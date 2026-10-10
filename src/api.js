@@ -1,7 +1,14 @@
 import { authHeaders, getSession, setSession } from './api/session.js';
 
 // The FastAPI service is deployed separately from this Vite application.
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
+// Priority: VITE_API_BASE_URL from the build environment, then the
+// production Render URL (so a deployed build can never silently fall
+// back to localhost), then localhost for local development.
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL
+  || (import.meta.env.PROD ? 'https://yonko-api-vjqw.onrender.com' : '')
+  || 'http://localhost:8000'
+).replace(/\/$/, '');
 
 export { API_BASE_URL };
 
