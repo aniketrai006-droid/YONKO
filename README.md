@@ -103,10 +103,28 @@ VITE_API_BASE_URL=http://localhost:8000
 
 The reviewer portal offers **Email and password** authentication for reviewers. Accounts are saved in local storage for the demo with profile onboarding (name and date of birth).
 
+![Landing page with Sign in and Create account](docs/screenshots/landing-page.png)
+*Landing page: reviewers sign in or create an account.*
+
+![Reviewer case dashboard](docs/screenshots/cases-dashboard.png)
+*Case dashboard after sign in: case counts, search, and status filter.*
+
 ## Analysis request
 
 The frontend sends a multipart `POST /analyze` request using the `files` field. Submit 2–10 non-empty PNG, JPG, or JPEG images or PDF files with unique filenames. Each PDF may contain at most 10 pages. JPEG uploads are converted to PNG and every PDF page is rasterised to a PNG image in the backend's temporary directory before OCR, so the detection engine only ever sees images.
 
+![Document Bundle Analysis workspace](docs/screenshots/reviewer-workspace.png)
+*Reviewer workspace for a case: severity filters and the upload area.*
+
+![Upload documents dialog](docs/screenshots/upload-dialog.png)
+*Upload dialog: 2–10 PNG, JPG, JPEG, or PDF files per bundle.*
+
 Uploads are processed in a temporary backend directory and removed after analysis. The UI therefore displays returned text evidence, confidence, bounding boxes, and warnings rather than durable image previews.
+
+![Uploaded document bundle with OCR status](docs/screenshots/uploaded-bundle.png)
+*Processed bundle: each document with its format and OCR status.*
+
+![Findings review with evidence, confidence, and accept or dismiss actions](docs/screenshots/findings-review.png)
+*Findings view: per-document values with confidence, a suggested fix, and Accept or Dismiss.*
 
 For the response contract, see [docs/API_CONTRACT.md](docs/API_CONTRACT.md). The frontend is configured to call this API directly.
